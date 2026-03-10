@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/nav_live"
+        android:icon="@android:drawable/ic_media_play"
+        android:title="Live TV" />
+    <item
+        android:id="@+id/nav_vod"
+        android:icon="@android:drawable/ic_menu_gallery"
+        android:title="Movies" />
+    <item
+        android:id="@+id/nav_series"
+        android:icon="@android:drawable/ic_menu_slideshow"
+        android:title="Series" />
+    <item
+        android:id="@+id/nav_stremio"
+        android:icon="@android:drawable/ic_menu_compass"
+        android:title="Stremio" />
+    <item
+        android:id="@+id/nav_settings"
+        android:icon="@android:drawable/ic_menu_preferences"
+        android:title="Settings" />
+</menu>
