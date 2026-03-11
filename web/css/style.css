@@ -572,6 +572,10 @@ body {
     max-height: calc(100vh - 120px);
 }
 
+/* Hide browser's native video spinner */
+.player-wrapper video::-webkit-media-controls-overlay-play-button { display: none; }
+.player-wrapper video::-webkit-media-controls-loading-panel { display: none; }
+
 .player-controls-extra {
     display: flex;
     justify-content: center;
@@ -1227,57 +1231,54 @@ body {
 
 .btn-logout:hover { background: #ff444420; }
 
-/* Spinner (fallback) */
-.spinner {
-    width: 36px;
-    height: 36px;
-    border: 3px solid #333;
-    border-top-color: #00D4FF;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    margin: 20px auto;
+/* EKC Logo Loader — always centered on screen */
+.ekc-loader {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(5, 5, 8, 0.6);
+    z-index: 9999;
+    pointer-events: none;
 }
 
+.ekc-spin {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    animation: ekc-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes ekc-glow {
+    0%, 100% { opacity: 0.25; filter: drop-shadow(0 0 4px #00D4FF22); transform: scale(0.92); }
+    50% { opacity: 1; filter: drop-shadow(0 0 28px #00D4FFBB) drop-shadow(0 0 56px #00D4FF55); transform: scale(1.08); }
+}
+
+/* Spinner class (legacy fallback, same EKC glow) */
+.spinner {
+    width: 64px;
+    height: 64px;
+    margin: 20px auto;
+    background: url('../img/ekc-logo.png') center/contain no-repeat;
+    animation: ekc-glow 1.5s ease-in-out infinite;
+    border-radius: 50%;
+}
 .spinner.hidden { display: none; }
 
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* EKC Logo Spinner */
-.ekc-loader {
+/* Inline loader (inside containers, not fullscreen) */
+.ekc-loader-inline {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     padding: 40px 20px;
 }
-
-.ekc-spin {
+.ekc-loader-inline .ekc-spin {
     width: 64px;
     height: 64px;
-    border-radius: 50%;
-    animation: ekc-pulse 1.2s ease-in-out infinite;
-    filter: drop-shadow(0 0 12px #00D4FF66);
 }
-
-@keyframes ekc-pulse {
-    0% { transform: scale(1) rotate(0deg); opacity: 1; filter: drop-shadow(0 0 8px #00D4FF44); }
-    50% { transform: scale(1.1) rotate(180deg); opacity: 0.7; filter: drop-shadow(0 0 20px #00D4FF88); }
-    100% { transform: scale(1) rotate(360deg); opacity: 1; filter: drop-shadow(0 0 8px #00D4FF44); }
-}
-
-/* Full page loader overlay */
-.ekc-loader-overlay {
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    background: rgba(8, 10, 16, 0.7);
-    z-index: 50;
-}
-
-.ekc-loader-overlay.hidden { display: none; }
 
 /* Empty State */
 .empty-state {

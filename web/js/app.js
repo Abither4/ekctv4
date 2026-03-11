@@ -70,6 +70,10 @@ const App = {
     EPG_HOURS: 24,
     PX_PER_MIN: 3.33, // pixels per minute (200px per 60min)
 
+    // Global loading overlay
+    showLoader() { document.getElementById('globalLoader').classList.remove('hidden'); },
+    hideLoader() { document.getElementById('globalLoader').classList.add('hidden'); },
+
     init() {
         // Merge default + user-saved addons (deduplicate by url)
         try {
@@ -668,7 +672,8 @@ const App = {
 
     async loadCategories(type) {
         const categoryList = document.getElementById('categoryList');
-        categoryList.innerHTML = '<div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"></div>';
+        categoryList.innerHTML = '';
+        this.showLoader();
 
         try {
             let action;
@@ -725,17 +730,18 @@ const App = {
         } catch (e) {
             console.error('[Categories] Error:', e);
             categoryList.innerHTML = `<div style="padding:16px;color:#ff4444">Failed to load: ${e.message}</div>`;
+        } finally {
+            this.hideLoader();
         }
     },
 
     async loadStreams(type, categoryId) {
         const grid = document.getElementById('contentGrid');
         const emptyState = document.getElementById('emptyState');
-        const spinner = document.getElementById('contentSpinner');
 
         grid.innerHTML = '';
         emptyState.classList.add('hidden');
-        spinner.classList.remove('hidden');
+        this.showLoader();
 
         try {
             let action;
@@ -771,7 +777,6 @@ const App = {
             });
 
             this.streams = [...seen.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-            spinner.classList.add('hidden');
 
             if (type === 'live') {
                 grid.className = 'content-grid list-view';
@@ -781,8 +786,9 @@ const App = {
                 this.streams.forEach(item => this.renderPosterCard(grid, item, type));
             }
         } catch (e) {
-            spinner.classList.add('hidden');
             grid.innerHTML = `<div style="padding:16px;color:#ff4444">Failed: ${e.message}</div>`;
+        } finally {
+            this.hideLoader();
         }
     },
 
@@ -841,17 +847,14 @@ const App = {
 
     async loadSeriesDetail(seriesId, seriesName, source) {
         const grid = document.getElementById('contentGrid');
-        const spinner = document.getElementById('contentSpinner');
         const backBtn = document.getElementById('btnBack');
 
         grid.innerHTML = '';
-        spinner.classList.remove('hidden');
+        this.showLoader();
         backBtn.classList.remove('hidden');
-        // Series detail - title shown via back button context
 
         try {
             const data = await this.xtreamGet(source, 'get_series_info', `&series_id=${seriesId}`);
-            spinner.classList.add('hidden');
             grid.className = 'content-grid list-view';
 
             if (data?.episodes) {
@@ -882,8 +885,9 @@ const App = {
                 });
             }
         } catch (e) {
-            spinner.classList.add('hidden');
             grid.innerHTML = `<div style="padding:16px;color:#ff4444">Failed: ${e.message}</div>`;
+        } finally {
+            this.hideLoader();
         }
     },
 
@@ -948,9 +952,14 @@ const App = {
             } catch(e) {}
         }, { once: true });
 
+        // Show EKC spinner during buffering/waiting
+        video.addEventListener('waiting', () => this.showLoader());
+        video.addEventListener('playing', () => this.hideLoader());
+        video.addEventListener('canplay', () => this.hideLoader());
+
         video.onerror = () => {
             console.error('[Player] video.onerror', video.error);
-            document.getElementById('playerSpinner').classList.add('hidden');
+            this.hideLoader();
             errorEl.textContent = 'Playback error. Stream may be unavailable.';
             errorEl.classList.remove('hidden');
         };
@@ -980,12 +989,11 @@ const App = {
 
         if (this.hls) { this.hls.destroy(); this.hls = null; }
 
-        const spinner = document.getElementById('playerSpinner');
-        spinner.classList.remove('hidden');
+        this.showLoader();
 
         // Hide spinner when video starts playing
         const onPlaying = () => {
-            spinner.classList.add('hidden');
+            this.hideLoader();
             video.removeEventListener('playing', onPlaying);
         };
         video.addEventListener('playing', onPlaying);
@@ -1005,7 +1013,7 @@ const App = {
             video.src = url;
             video.play().catch(e => {
                 console.error('[Player] Direct play failed:', e);
-                spinner.classList.add('hidden');
+                this.hideLoader();
                 errorEl.textContent = 'Playback failed: ' + e.message;
                 errorEl.classList.remove('hidden');
             });
@@ -1059,7 +1067,7 @@ const App = {
                             return;
                         }
                     }
-                    spinner.classList.add('hidden');
+                    this.hideLoader();
                     errorEl.textContent = 'Stream unavailable. Try a different channel.';
                     errorEl.classList.remove('hidden');
                     this._retryCount = 0;
@@ -1072,7 +1080,7 @@ const App = {
             // Fallback: try direct play
             video.src = url;
             video.play().catch(() => {
-                spinner.classList.add('hidden');
+                this.hideLoader();
                 errorEl.textContent = 'Unable to play this stream format.';
                 errorEl.classList.remove('hidden');
             });
@@ -1162,7 +1170,8 @@ const App = {
     // Board: horizontal scrolling catalog rows from all installed addons
     async renderStremioBoard() {
         const content = document.getElementById('stremioContent');
-        content.innerHTML = '<div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"></div>';
+        content.innerHTML = '';
+        this.showLoader();
 
         if (this.stremioAddons.length === 0) {
             content.innerHTML = `
@@ -1227,12 +1236,14 @@ const App = {
             section.appendChild(scroller);
             content.appendChild(section);
         });
+        this.hideLoader();
     },
 
     // Discover: filterable grid of content from all addons
     async renderStremioDiscover() {
         const content = document.getElementById('stremioContent');
-        content.innerHTML = '<div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"></div>';
+        content.innerHTML = '';
+        this.showLoader();
 
         if (this.stremioAddons.length === 0) {
             content.innerHTML = '<div class="stremio-empty"><p style="color:#8b949e">Install addons to discover content.</p></div>';
@@ -1273,7 +1284,8 @@ const App = {
     async _loadDiscoverGrid(typeFilter) {
         const grid = document.getElementById('stremioDiscoverGrid');
         if (!grid) return;
-        grid.innerHTML = '<div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"></div>';
+        grid.innerHTML = '';
+        this.showLoader();
 
         const allMetas = [];
         const promises = [];
@@ -1313,6 +1325,7 @@ const App = {
             const card = this._createStremioCard(meta, meta._addon);
             grid.appendChild(card);
         });
+        this.hideLoader();
     },
 
     // Search page
@@ -1338,7 +1351,8 @@ const App = {
     async _executeStremioSearch(query) {
         const grid = document.getElementById('stremioSearchGrid');
         if (!grid) return;
-        grid.innerHTML = '<div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"></div>';
+        grid.innerHTML = '';
+        this.showLoader();
 
         const allMetas = [];
         const promises = [];
@@ -1385,6 +1399,7 @@ const App = {
             const card = this._createStremioCard(meta, meta._addon);
             grid.appendChild(card);
         });
+        this.hideLoader();
     },
 
     // Create a stremio poster card
@@ -1445,9 +1460,7 @@ const App = {
             </div>
             <div class="stremio-streams-section">
                 <h3><span class="material-icons" style="font-size:20px;vertical-align:middle;margin-right:6px">play_circle</span>Streams</h3>
-                <div id="stremioStreamList" class="stremio-stream-list">
-                    <div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"></div>
-                </div>
+                <div id="stremioStreamList" class="stremio-stream-list"></div>
             </div>
         `;
 
@@ -1562,6 +1575,7 @@ const App = {
 
         // Show stream list by default
         this._showStreamList(allStreams, meta);
+        this.hideLoader();
     },
 
     async _autoPlay(streams, meta) {
@@ -1575,12 +1589,13 @@ const App = {
         const info = this._parseStreamInfo(best);
         if (list) {
             list.innerHTML = `<div style="padding:16px;color:#00D4FF;text-align:center">
-                <div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"></div>
                 <div style="margin-top:12px">Auto-playing ${info.resolution} stream${info.seeders ? ` (${info.seeders} seeders)` : ''}...</div>
             </div>`;
+            this.showLoader();
         }
 
         await this._playStream(best, meta);
+        this.hideLoader();
     },
 
     async _playStream(stream, meta) {
@@ -1686,7 +1701,8 @@ const App = {
         const list = document.getElementById('stremioStreamList');
         if (!list) return;
 
-        list.innerHTML = '<div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"></div>';
+        list.innerHTML = '';
+        this.showLoader();
 
         const allStreams = [];
         const promises = this.stremioAddons.map(async (a) => {
@@ -1771,6 +1787,7 @@ const App = {
         document.getElementById('btnEpAutoPlay').addEventListener('click', () => this._autoPlay(allStreams, epMeta));
         document.getElementById('btnEpSelectStream').addEventListener('click', showEpStreams);
         showEpStreams();
+        this.hideLoader();
     },
 
     async _resolveDebrid(stream, meta) {
@@ -1875,7 +1892,8 @@ const App = {
             dateLabel.textContent = dayNames[targetDate.getDay()] + ', ' + monthNames[targetDate.getMonth()] + ' ' + targetDate.getDate();
         }
 
-        channelList.innerHTML = '<div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"><div style="margin-top:10px;color:#8b949e;font-size:12px">Connecting...</div></div>';
+        channelList.innerHTML = '';
+        this.showLoader();
 
         try {
             const allServers = [];
@@ -1962,6 +1980,8 @@ const App = {
         } catch (e) {
             console.error('[EPG] loadEpg error:', e);
             channelList.innerHTML = `<div style="padding:16px;color:#ff4444">Failed to load: ${e.message}</div>`;
+        } finally {
+            this.hideLoader();
         }
     },
 
@@ -2119,7 +2139,8 @@ const App = {
 
         console.log('[EPG] renderEpgFiltered, allChannels:', this.epgAllChannels?.length);
 
-        channelList.innerHTML = '<div class="ekc-loader"><img src="img/ekc-logo.png" class="ekc-spin"><div style="margin-top:10px;color:#8b949e;font-size:12px">Loading channels...</div></div>';
+        channelList.innerHTML = '';
+        this.showLoader();
         programs.innerHTML = '<div class="epg-now-line" id="epgNowLine"></div>';
         timeline.innerHTML = '';
 
@@ -2307,6 +2328,8 @@ const App = {
       } catch(e) {
         console.error('[EPG] renderEpgFiltered error:', e);
         channelList.innerHTML = `<div style="padding:20px;color:#ff4444;text-align:center">Error: ${e.message}</div>`;
+      } finally {
+        this.hideLoader();
       }
     },
 
