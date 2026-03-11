@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EKC TV V4</title>
     <link rel="stylesheet" href="css/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Racing+Sans+One&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 </head>
 <body>
@@ -46,22 +46,28 @@
 
             <div class="home-grid">
                 <button class="home-tile" data-page="guide">
-                    <div class="home-icon icon-guide"></div>
+                    <span class="material-icons home-tile-icon">live_tv</span>
+                    <span class="home-tile-label">Guide</span>
                 </button>
                 <button class="home-tile" data-page="vod">
-                    <div class="home-icon icon-movies"></div>
+                    <span class="material-icons home-tile-icon">movie</span>
+                    <span class="home-tile-label">Movies</span>
                 </button>
                 <button class="home-tile" data-page="series">
-                    <div class="home-icon icon-series"></div>
+                    <span class="material-icons home-tile-icon">tv</span>
+                    <span class="home-tile-label">Series</span>
                 </button>
                 <button class="home-tile" data-page="stremio">
-                    <div class="home-icon icon-stremio"></div>
+                    <span class="material-icons home-tile-icon">play_circle</span>
+                    <span class="home-tile-label">Stremio</span>
                 </button>
                 <button class="home-tile" data-page="favorites">
-                    <div class="home-icon icon-favorites"></div>
+                    <span class="material-icons home-tile-icon">favorite</span>
+                    <span class="home-tile-label">Favorites</span>
                 </button>
                 <button class="home-tile" data-page="settings">
-                    <div class="home-icon icon-settings"></div>
+                    <span class="material-icons home-tile-icon">settings</span>
+                    <span class="home-tile-label">Settings</span>
                 </button>
             </div>
         </div>
@@ -101,11 +107,6 @@
                 </button>
             </div>
             <div class="top-nav-right">
-                <div class="source-toggle">
-                    <button class="source-btn active" data-source="all">All</button>
-                    <button class="source-btn" data-source="marble">Marble</button>
-                    <button class="source-btn" data-source="pony">Premium</button>
-                </div>
                 <input type="text" id="searchInput" class="search-box" placeholder="Search...">
                 <button id="btnBack" class="icon-btn hidden" title="Back">
                     <span class="material-icons">arrow_back</span>
@@ -137,10 +138,7 @@
                             <button class="epg-src-btn" data-epg-source="pony">Premium</button>
                         </div>
                         <div style="flex:1"></div>
-                        <button id="btnEpgPrev" title="Previous"><span class="material-icons" style="font-size:18px">chevron_left</span></button>
-                        <span class="epg-date" id="epgDate">Today</span>
-                        <button id="btnEpgNext" title="Next"><span class="material-icons" style="font-size:18px">chevron_right</span></button>
-                        <button id="btnEpgNow" class="epg-now-btn">Now</button>
+                        <span class="epg-clock" id="epgClock" title="Click to change timezone"></span>
                     </div>
                     <div class="epg-cat-bar" id="epgCatBar" style="display:none"></div>
                     <div id="epgNowBar" class="epg-now-bar hidden">
@@ -208,6 +206,40 @@
             </div>
         </div>
 
+    </div>
+
+    <!-- Media Detail Modal -->
+    <div id="mediaDetailModal" class="media-detail-modal hidden">
+        <div class="media-detail-bg" id="mediaDetailBg"></div>
+        <button class="media-detail-close" id="btnMediaDetailClose"><span class="material-icons">arrow_back</span></button>
+        <div class="media-detail-body" id="mediaDetailBody"></div>
+    </div>
+
+    <!-- Trailer Overlay -->
+    <div id="trailerOverlay" class="trailer-overlay hidden">
+        <div class="trailer-header">
+            <button id="btnCloseTrailer" class="icon-btn"><span class="material-icons">close</span></button>
+            <span id="trailerTitle">Trailer</span>
+        </div>
+        <div class="trailer-wrapper">
+            <div id="trailerPlayer"></div>
+            <div id="trailerError" class="trailer-error hidden"></div>
+        </div>
+    </div>
+
+    <!-- Timezone Picker Modal -->
+    <div id="tzModal" class="tz-modal hidden">
+        <div class="tz-modal-box">
+            <h3>Select Your Time Zone</h3>
+            <div class="tz-options">
+                <button class="tz-btn" data-tz="America/New_York">Eastern (ET)</button>
+                <button class="tz-btn" data-tz="America/Chicago">Central (CT)</button>
+                <button class="tz-btn" data-tz="America/Denver">Mountain (MT)</button>
+                <button class="tz-btn" data-tz="America/Los_Angeles">Pacific (PT)</button>
+                <button class="tz-btn" data-tz="America/Anchorage">Alaska (AKT)</button>
+                <button class="tz-btn" data-tz="Pacific/Honolulu">Hawaii (HT)</button>
+            </div>
+        </div>
     </div>
 
     <script>

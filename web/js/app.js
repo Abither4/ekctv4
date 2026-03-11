@@ -75,6 +75,22 @@ const App = {
     hideLoader() { document.getElementById('globalLoader').classList.add('hidden'); },
 
     init() {
+        // Auto-clear caches every 24 hours
+        const lastClear = parseInt(localStorage.getItem('sv_cache_cleared') || '0');
+        const now = Date.now();
+        if (now - lastClear > 24 * 60 * 60 * 1000) {
+            this.epgCache = {};
+            this.epgData = {};
+            this.epgAllChannels = [];
+            this.categories = [];
+            this.streams = [];
+            if ('caches' in window) {
+                caches.keys().then(names => names.forEach(n => caches.delete(n)));
+            }
+            localStorage.setItem('sv_cache_cleared', String(now));
+            console.log('[Init] 24h cache clear');
+        }
+
         // Merge default + user-saved addons (deduplicate by url)
         try {
             const saved = JSON.parse(localStorage.getItem('sv_addons') || '[]');
@@ -142,6 +158,8 @@ const App = {
 
         document.getElementById('btnBack').addEventListener('click', () => this.goBack());
         document.getElementById('btnClosePlayer').addEventListener('click', () => this.closePlayer());
+        document.getElementById('btnCloseTrailer').addEventListener('click', () => this.closeTrailer());
+        document.getElementById('btnMediaDetailClose').addEventListener('click', () => this.closeMediaDetail());
         document.getElementById('btnFullscreen').addEventListener('click', () => {
             const v = document.getElementById('videoPlayer');
             if (v.requestFullscreen) v.requestFullscreen();
@@ -159,10 +177,26 @@ const App = {
         document.getElementById('btnStremioDetailClose').addEventListener('click', () => this.closeStremioDetail());
         document.getElementById('stremioSearch').addEventListener('input', (e) => this.handleStremioSearch(e.target.value));
 
-        // EPG controls
-        document.getElementById('btnEpgPrev').addEventListener('click', () => { this.epgDateOffset--; this.loadEpg(); });
-        document.getElementById('btnEpgNext').addEventListener('click', () => { this.epgDateOffset++; this.loadEpg(); });
-        document.getElementById('btnEpgNow').addEventListener('click', () => { this.epgDateOffset = 0; this.loadEpg(); this.scrollEpgToNow(); });
+        // EPG clock + timezone picker
+        this._userTz = localStorage.getItem('sv_timezone') || 'America/Chicago';
+        this._startEpgClock();
+
+        document.getElementById('epgClock').addEventListener('click', () => this._openTzPicker());
+        document.querySelectorAll('.tz-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this._userTz = btn.dataset.tz;
+                localStorage.setItem('sv_timezone', this._userTz);
+                document.getElementById('tzModal').classList.add('hidden');
+                this._updateEpgClock();
+                // Highlight active
+                document.querySelectorAll('.tz-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        });
+        // Close modal on backdrop click
+        document.getElementById('tzModal').addEventListener('click', (e) => {
+            if (e.target.id === 'tzModal') e.target.classList.add('hidden');
+        });
 
         // EPG category chips (delegated)
         document.getElementById('epgCatBar').addEventListener('click', (e) => {
@@ -185,7 +219,10 @@ const App = {
 
         // === Keyboard / Remote Control Navigation ===
         this._focusedIdx = -1;
+        this._focusZone = 'content'; // 'nav', 'sidebar', 'content'
         document.addEventListener('keydown', (e) => this.handleRemoteKey(e));
+        // Track last focused zone per page so we restore correctly
+        this._navIdx = 0;
 
         // When exiting fullscreen (back button on remote/browser), close the player
         document.addEventListener('fullscreenchange', () => {
@@ -208,23 +245,61 @@ const App = {
         });
     },
 
-    // Remote control & keyboard handler (Onn 4K Pro / Android TV remote)
+    // ============================================================
+    // Remote control & keyboard handler (Onn 4K Pro / Android TV)
+    // Full D-pad navigation: arrow keys to move, Enter to select,
+    // Back/Escape to go back. Works on every screen.
+    // ============================================================
     handleRemoteKey(e) {
         const key = e.key;
+
+        // If an input field is focused, let it handle keys normally
+        // except Escape which we capture to blur
+        const active = document.activeElement;
+        const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT');
+        if (isInput) {
+            if (key === 'Escape') { active.blur(); e.preventDefault(); }
+            return;
+        }
+
+        // Timezone modal open? Handle its navigation
+        const tzModal = document.getElementById('tzModal');
+        if (tzModal && !tzModal.classList.contains('hidden')) {
+            this._handleTzModalKeys(e);
+            return;
+        }
+
+        // Trailer overlay open? (highest priority since it's on top)
+        const trailerOpen = !document.getElementById('trailerOverlay').classList.contains('hidden');
+        if (trailerOpen) {
+            if (key === 'Escape' || key === 'Backspace' || key === 'GoBack') {
+                e.preventDefault();
+                this.closeTrailer();
+            }
+            return;
+        }
+
+        // Media detail modal open?
+        const mediaDetailOpen = !document.getElementById('mediaDetailModal').classList.contains('hidden');
+        if (mediaDetailOpen) {
+            if (key === 'Escape' || key === 'Backspace' || key === 'GoBack') {
+                e.preventDefault();
+                this.closeMediaDetail();
+            }
+            return;
+        }
+
         const playerOpen = !document.getElementById('playerOverlay').classList.contains('hidden');
 
-        // Player controls
+        // === Player controls ===
         if (playerOpen) {
             switch(key) {
-                case 'Escape':
-                case 'Backspace':
-                case 'GoBack':
+                case 'Escape': case 'Backspace': case 'GoBack':
                     e.preventDefault();
                     this.closePlayer();
                     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
                     return;
-                case 'MediaPlayPause':
-                case ' ':
+                case 'MediaPlayPause': case ' ':
                     e.preventDefault();
                     const v = document.getElementById('videoPlayer');
                     v.paused ? v.play() : v.pause();
@@ -237,8 +312,7 @@ const App = {
                     e.preventDefault();
                     document.getElementById('videoPlayer').currentTime += 10;
                     return;
-                case 'f':
-                case 'Enter':
+                case 'f': case 'Enter':
                     e.preventDefault();
                     const overlay = document.getElementById('playerOverlay');
                     if (!document.fullscreenElement) {
@@ -251,149 +325,638 @@ const App = {
             return;
         }
 
-        // Navigation in lists
-        // Guide has special 2D navigation (left=channels, right=programs, up/down=scroll channels)
-        if (this.currentPage === 'guide') {
-            this.handleGuideKey(e);
+        // === Detect current screen ===
+        const loginActive = document.getElementById('loginScreen').classList.contains('active');
+        const homeActive = document.getElementById('homeScreen').classList.contains('active');
+        const mainActive = document.getElementById('mainScreen').classList.contains('active');
+
+        if (loginActive) { this._handleLoginKeys(e); return; }
+        if (homeActive) { this._handleHomeKeys(e); return; }
+        if (mainActive) { this._handleMainKeys(e); return; }
+    },
+
+    // --- Login Screen: Up/Down between username, password, connect ---
+    _loginFocusIdx: 0,
+    _handleLoginKeys(e) {
+        const items = [
+            document.getElementById('loginUser'),
+            document.getElementById('loginPass'),
+            document.getElementById('btnConnect')
+        ];
+        switch(e.key) {
+            case 'ArrowUp':
+                e.preventDefault();
+                this._loginFocusIdx = Math.max(0, this._loginFocusIdx - 1);
+                this._focusLoginItem(items);
+                break;
+            case 'ArrowDown':
+                e.preventDefault();
+                this._loginFocusIdx = Math.min(items.length - 1, this._loginFocusIdx + 1);
+                this._focusLoginItem(items);
+                break;
+            case 'Enter':
+                e.preventDefault();
+                if (items[this._loginFocusIdx]) {
+                    const el = items[this._loginFocusIdx];
+                    if (el.tagName === 'INPUT') { el.focus(); }
+                    else { el.click(); }
+                }
+                break;
+        }
+    },
+    _focusLoginItem(items) {
+        this._clearFocus();
+        const el = items[this._loginFocusIdx];
+        if (el) { el.classList.add('remote-focus'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+    },
+
+    // --- Home Screen: 2D grid navigation on home tiles ---
+    _homeFocusIdx: 0,
+    _handleHomeKeys(e) {
+        const tiles = [...document.querySelectorAll('.home-tile')];
+        if (!tiles.length) return;
+        const cols = this._getGridCols(tiles[0]);
+
+        switch(e.key) {
+            case 'ArrowRight':
+                e.preventDefault();
+                this._homeFocusIdx = Math.min(tiles.length - 1, this._homeFocusIdx + 1);
+                this._focusElement(tiles, this._homeFocusIdx);
+                break;
+            case 'ArrowLeft':
+                e.preventDefault();
+                this._homeFocusIdx = Math.max(0, this._homeFocusIdx - 1);
+                this._focusElement(tiles, this._homeFocusIdx);
+                break;
+            case 'ArrowDown':
+                e.preventDefault();
+                if (this._homeFocusIdx + cols < tiles.length) this._homeFocusIdx += cols;
+                this._focusElement(tiles, this._homeFocusIdx);
+                break;
+            case 'ArrowUp':
+                e.preventDefault();
+                if (this._homeFocusIdx - cols >= 0) this._homeFocusIdx -= cols;
+                this._focusElement(tiles, this._homeFocusIdx);
+                break;
+            case 'Enter':
+                e.preventDefault();
+                if (tiles[this._homeFocusIdx]) tiles[this._homeFocusIdx].click();
+                break;
+            case 'Escape': case 'Backspace': case 'GoBack':
+                e.preventDefault();
+                break; // Already on home, nowhere to go back
+        }
+    },
+
+    // --- Main Screen: handles nav tabs, sidebar, content grid, stremio, guide ---
+    _handleMainKeys(e) {
+        const key = e.key;
+
+        // Stremio detail panel open? Handle separately
+        const stremioDetail = document.getElementById('stremioDetail');
+        if (stremioDetail && !stremioDetail.classList.contains('hidden')) {
+            if (key === 'Escape' || key === 'Backspace' || key === 'GoBack') {
+                e.preventDefault();
+                document.getElementById('btnStremioDetailClose').click();
+            }
             return;
         }
 
-        const focusable = this.getFocusableItems();
-        if (!focusable.length) return;
+        // Guide page has its own 2D navigation
+        if (this.currentPage === 'guide' && this._focusZone !== 'nav') {
+            this._handleGuideKeys(e);
+            return;
+        }
+
+        // Stremio page
+        if (this.currentPage === 'stremio' && this._focusZone !== 'nav') {
+            this._handleStremioKeys(e);
+            return;
+        }
+
+        // Standard pages: nav, sidebar, content
+        const sidebarVisible = !document.getElementById('categorySidebar').classList.contains('hidden');
 
         switch(key) {
             case 'ArrowUp':
                 e.preventDefault();
-                this._focusedIdx = Math.max(0, this._focusedIdx - 1);
-                this.focusItem(focusable);
-                break;
-            case 'ArrowDown':
-                e.preventDefault();
-                this._focusedIdx = Math.min(focusable.length - 1, this._focusedIdx + 1);
-                this.focusItem(focusable);
-                break;
-            case 'ArrowLeft':
-                e.preventDefault();
-                this.navigateTab(-1);
-                break;
-            case 'ArrowRight':
-                e.preventDefault();
-                this.navigateTab(1);
-                break;
-            case 'Enter':
-                e.preventDefault();
-                if (this._focusedIdx >= 0 && focusable[this._focusedIdx]) {
-                    focusable[this._focusedIdx].click();
+                if (this._focusZone === 'nav') {
+                    // Already at top
+                } else if (this._focusZone === 'sidebar') {
+                    this._sidebarIdx = Math.max(0, this._sidebarIdx - 1);
+                    this._focusSidebar();
+                } else {
+                    this._moveInGrid(-1, 'up');
                 }
                 break;
-            case 'Escape':
-            case 'Backspace':
-            case 'GoBack':
+
+            case 'ArrowDown':
                 e.preventDefault();
-                const backBtn = document.getElementById('btnBack');
-                if (!backBtn.classList.contains('hidden')) {
-                    backBtn.click();
+                if (this._focusZone === 'nav') {
+                    // Move into content area
+                    this._focusZone = sidebarVisible ? 'sidebar' : 'content';
+                    if (this._focusZone === 'sidebar') { this._sidebarIdx = 0; this._focusSidebar(); }
+                    else { this._focusedIdx = 0; this._focusContent(); }
+                } else if (this._focusZone === 'sidebar') {
+                    const cats = this._getSidebarItems();
+                    this._sidebarIdx = Math.min(cats.length - 1, this._sidebarIdx + 1);
+                    this._focusSidebar();
                 } else {
+                    this._moveInGrid(1, 'down');
+                }
+                break;
+
+            case 'ArrowLeft':
+                e.preventDefault();
+                if (this._focusZone === 'nav') {
+                    this._navIdx = Math.max(0, this._navIdx - 1);
+                    this._focusNav();
+                } else if (this._focusZone === 'content' && sidebarVisible) {
+                    this._focusZone = 'sidebar';
+                    this._focusSidebar();
+                } else if (this._focusZone === 'content') {
+                    this._moveInGrid(-1, 'left');
+                }
+                break;
+
+            case 'ArrowRight':
+                e.preventDefault();
+                if (this._focusZone === 'nav') {
+                    const navBtns = [...document.querySelectorAll('.nav-btn')];
+                    this._navIdx = Math.min(navBtns.length - 1, this._navIdx + 1);
+                    this._focusNav();
+                } else if (this._focusZone === 'sidebar') {
+                    this._focusZone = 'content';
+                    this._focusedIdx = Math.max(0, this._focusedIdx);
+                    this._focusContent();
+                } else {
+                    this._moveInGrid(1, 'right');
+                }
+                break;
+
+            case 'Enter':
+                e.preventDefault();
+                if (this._focusZone === 'nav') {
+                    const navBtns = [...document.querySelectorAll('.nav-btn')];
+                    if (navBtns[this._navIdx]) navBtns[this._navIdx].click();
+                    this._focusZone = sidebarVisible ? 'sidebar' : 'content';
+                    this._focusedIdx = 0; this._sidebarIdx = 0;
+                } else if (this._focusZone === 'sidebar') {
+                    const cats = this._getSidebarItems();
+                    if (cats[this._sidebarIdx]) cats[this._sidebarIdx].click();
+                    this._focusedIdx = 0;
+                } else {
+                    const items = this._getContentItems();
+                    if (items[this._focusedIdx]) items[this._focusedIdx].click();
+                }
+                break;
+
+            case 'Escape': case 'Backspace': case 'GoBack':
+                e.preventDefault();
+                if (this._focusZone === 'content' && sidebarVisible) {
+                    this._focusZone = 'sidebar';
+                    this._focusSidebar();
+                } else if (this._focusZone === 'sidebar' || this._focusZone === 'nav') {
                     this.showHome();
+                    this._homeFocusIdx = 0;
+                } else {
+                    const backBtn = document.getElementById('btnBack');
+                    if (!backBtn.classList.contains('hidden')) {
+                        backBtn.click();
+                    } else {
+                        this.showHome();
+                        this._homeFocusIdx = 0;
+                    }
+                }
+                break;
+
+            // Tab key to cycle zones
+            case 'Tab':
+                e.preventDefault();
+                if (this._focusZone === 'nav') {
+                    this._focusZone = sidebarVisible ? 'sidebar' : 'content';
+                    if (this._focusZone === 'sidebar') this._focusSidebar();
+                    else this._focusContent();
+                } else if (this._focusZone === 'sidebar') {
+                    this._focusZone = 'content';
+                    this._focusContent();
+                } else {
+                    this._focusZone = 'nav';
+                    this._focusNav();
                 }
                 break;
         }
     },
 
-    // Guide-specific 2D keyboard navigation
-    _guideFocusSide: 'channels', // 'channels' or 'programs'
+    // --- Guide-specific 2D keyboard navigation ---
+    // Focus zones for guide: sidebar | epg-toolbar | content (channels/programs)
+    _guideFocusSide: 'channels',
     _guideFocusRow: 0,
+    _epgToolbarIdx: 0,
 
-    handleGuideKey(e) {
+    _getEpgToolbarBtns() {
+        return [...document.querySelectorAll('.epg-toolbar .epg-src-btn, .epg-toolbar .epg-clock')];
+    },
+
+    _focusEpgToolbar() {
+        this._clearFocus();
+        const btns = this._getEpgToolbarBtns();
+        if (this._epgToolbarIdx >= btns.length) this._epgToolbarIdx = 0;
+        if (btns[this._epgToolbarIdx]) {
+            btns[this._epgToolbarIdx].classList.add('remote-focus');
+            btns[this._epgToolbarIdx].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+    },
+
+    _handleGuideKeys(e) {
         const key = e.key;
         const channels = [...document.querySelectorAll('#epgChannelList .epg-channel-row')];
         const progRows = [...document.querySelectorAll('#epgPrograms .epg-program-row')];
-        if (!channels.length) return;
+        const sidebarItems = this._getSidebarItems();
 
         switch(key) {
             case 'ArrowUp':
                 e.preventDefault();
-                this._guideFocusRow = Math.max(0, this._guideFocusRow - 1);
-                this.focusGuideRow(channels, progRows);
+                if (this._focusZone === 'sidebar') {
+                    this._sidebarIdx = Math.max(0, this._sidebarIdx - 1);
+                    this._focusSidebar();
+                } else if (this._focusZone === 'epg-toolbar') {
+                    // From toolbar, go up to nav
+                    this._focusZone = 'nav';
+                    this._focusNav();
+                } else {
+                    // In channels/programs
+                    if (this._guideFocusRow <= 0) {
+                        // Go to EPG toolbar instead of straight to nav
+                        this._focusZone = 'epg-toolbar';
+                        this._epgToolbarIdx = 0;
+                        this._focusEpgToolbar();
+                    } else {
+                        this._guideFocusRow = Math.max(0, this._guideFocusRow - 1);
+                        this._focusGuideRow(channels, progRows);
+                    }
+                }
                 break;
             case 'ArrowDown':
                 e.preventDefault();
-                this._guideFocusRow = Math.min(channels.length - 1, this._guideFocusRow + 1);
-                this.focusGuideRow(channels, progRows);
+                if (this._focusZone === 'sidebar') {
+                    this._sidebarIdx = Math.min(sidebarItems.length - 1, this._sidebarIdx + 1);
+                    this._focusSidebar();
+                } else if (this._focusZone === 'epg-toolbar') {
+                    // From toolbar, go down into channel list
+                    this._focusZone = 'content';
+                    this._guideFocusRow = 0;
+                    this._guideFocusSide = 'channels';
+                    this._focusGuideRow(channels, progRows);
+                } else {
+                    this._guideFocusRow = Math.min(channels.length - 1, this._guideFocusRow + 1);
+                    this._focusGuideRow(channels, progRows);
+                }
                 break;
             case 'ArrowRight':
                 e.preventDefault();
-                if (this._guideFocusSide === 'channels') {
+                if (this._focusZone === 'sidebar') {
+                    this._focusZone = 'epg-toolbar';
+                    this._epgToolbarIdx = 0;
+                    this._focusEpgToolbar();
+                } else if (this._focusZone === 'epg-toolbar') {
+                    const btns = this._getEpgToolbarBtns();
+                    this._epgToolbarIdx = Math.min(btns.length - 1, this._epgToolbarIdx + 1);
+                    this._focusEpgToolbar();
+                } else if (this._guideFocusSide === 'channels') {
                     this._guideFocusSide = 'programs';
-                    this.focusGuideRow(channels, progRows);
+                    this._focusGuideRow(channels, progRows);
                 } else {
-                    // Scroll programs right
                     document.getElementById('epgScrollArea').scrollLeft += 200;
                 }
                 break;
             case 'ArrowLeft':
                 e.preventDefault();
-                if (this._guideFocusSide === 'programs') {
+                if (this._focusZone === 'sidebar') {
+                    // Already at leftmost
+                } else if (this._focusZone === 'epg-toolbar') {
+                    if (this._epgToolbarIdx > 0) {
+                        this._epgToolbarIdx--;
+                        this._focusEpgToolbar();
+                    } else {
+                        // Go to sidebar
+                        this._focusZone = 'sidebar';
+                        this._focusSidebar();
+                    }
+                } else if (this._guideFocusSide === 'programs') {
                     this._guideFocusSide = 'channels';
-                    this.focusGuideRow(channels, progRows);
+                    this._focusGuideRow(channels, progRows);
                 } else {
-                    // Go to prev nav tab
-                    this.navigateTab(-1);
+                    // From channels, go to sidebar
+                    this._focusZone = 'sidebar';
+                    this._focusSidebar();
                 }
                 break;
             case 'Enter':
                 e.preventDefault();
-                if (channels[this._guideFocusRow]) {
+                if (this._focusZone === 'sidebar') {
+                    if (sidebarItems[this._sidebarIdx]) sidebarItems[this._sidebarIdx].click();
+                } else if (this._focusZone === 'epg-toolbar') {
+                    const btns = this._getEpgToolbarBtns();
+                    if (btns[this._epgToolbarIdx]) btns[this._epgToolbarIdx].click();
+                } else if (channels[this._guideFocusRow]) {
                     channels[this._guideFocusRow].click();
                 }
                 break;
-            case 'Escape':
-            case 'Backspace':
-            case 'GoBack':
+            case 'Escape': case 'Backspace': case 'GoBack':
+                e.preventDefault();
+                if (this._focusZone === 'epg-toolbar') {
+                    this._focusZone = 'sidebar';
+                    this._focusSidebar();
+                } else if (this._focusZone === 'sidebar') {
+                    this.showHome();
+                } else {
+                    this._focusZone = 'epg-toolbar';
+                    this._epgToolbarIdx = 0;
+                    this._focusEpgToolbar();
+                }
+                break;
+            case 'Tab':
+                e.preventDefault();
+                if (this._focusZone === 'sidebar') {
+                    this._focusZone = 'epg-toolbar';
+                    this._epgToolbarIdx = 0;
+                    this._focusEpgToolbar();
+                } else if (this._focusZone === 'epg-toolbar') {
+                    this._focusZone = 'content';
+                    this._focusGuideRow(channels, progRows);
+                } else {
+                    this._focusZone = 'sidebar';
+                    this._focusSidebar();
+                }
+                break;
+        }
+    },
+
+    // --- Stremio page keyboard navigation ---
+    // Supports two layouts: Board (horizontal scroll rows) and Discover (CSS grid)
+    _stremioRow: 0,   // which row (Board) or grid-row (Discover)
+    _stremioCol: 0,   // which card within that row
+    _stremioIdx: 0,   // flat index for Discover grid
+
+    _handleStremioKeys(e) {
+        const key = e.key;
+        const isDiscover = !!document.getElementById('stremioDiscoverGrid');
+
+        if (isDiscover) {
+            this._handleStremioGridKeys(e);
+        } else {
+            this._handleStremioBoardKeys(e);
+        }
+    },
+
+    // Board view: rows of horizontal scrollers
+    _handleStremioBoardKeys(e) {
+        const key = e.key;
+        const rows = [...document.querySelectorAll('.stremio-catalog-row')];
+        if (!rows.length) {
+            if (key === 'Escape' || key === 'Backspace' || key === 'GoBack') { e.preventDefault(); this.showHome(); }
+            return;
+        }
+        if (this._stremioRow >= rows.length) this._stremioRow = 0;
+
+        const getCardsInRow = (rowIdx) => {
+            if (!rows[rowIdx]) return [];
+            return [...rows[rowIdx].querySelectorAll('.stremio-poster-card')];
+        };
+        const currentCards = getCardsInRow(this._stremioRow);
+
+        switch(key) {
+            case 'ArrowRight':
+                e.preventDefault();
+                if (currentCards.length) {
+                    this._stremioCol = Math.min(currentCards.length - 1, this._stremioCol + 1);
+                    this._focusStremioCard(rows, currentCards);
+                }
+                break;
+            case 'ArrowLeft':
+                e.preventDefault();
+                if (currentCards.length) {
+                    this._stremioCol = Math.max(0, this._stremioCol - 1);
+                    this._focusStremioCard(rows, currentCards);
+                }
+                break;
+            case 'ArrowDown':
+                e.preventDefault();
+                if (this._stremioRow < rows.length - 1) {
+                    this._stremioRow++;
+                    const newCards = getCardsInRow(this._stremioRow);
+                    if (this._stremioCol >= newCards.length) this._stremioCol = Math.max(0, newCards.length - 1);
+                    this._focusStremioCard(rows, newCards);
+                }
+                break;
+            case 'ArrowUp':
+                e.preventDefault();
+                if (this._stremioRow > 0) {
+                    this._stremioRow--;
+                    const newCards = getCardsInRow(this._stremioRow);
+                    if (this._stremioCol >= newCards.length) this._stremioCol = Math.max(0, newCards.length - 1);
+                    this._focusStremioCard(rows, newCards);
+                } else {
+                    this._focusZone = 'nav';
+                    this._focusNav();
+                }
+                break;
+            case 'Enter':
+                e.preventDefault();
+                if (currentCards[this._stremioCol]) currentCards[this._stremioCol].click();
+                break;
+            case 'Escape': case 'Backspace': case 'GoBack':
                 e.preventDefault();
                 this.showHome();
                 break;
         }
     },
 
-    focusGuideRow(channels, progRows) {
-        // Clear all focus
-        document.querySelectorAll('.remote-focus').forEach(el => el.classList.remove('remote-focus'));
+    _focusStremioCard(rows, cards) {
+        this._clearFocus();
+        const card = cards[this._stremioCol];
+        if (card) {
+            card.classList.add('remote-focus');
+            // Scroll the card into view within its horizontal scroller
+            const scroller = card.closest('.stremio-row-scroller, .stremio-row-scroll');
+            if (scroller) {
+                const cardLeft = card.offsetLeft - scroller.offsetLeft;
+                const cardRight = cardLeft + card.offsetWidth;
+                const scrollLeft = scroller.scrollLeft;
+                const scrollRight = scrollLeft + scroller.clientWidth;
+                if (cardLeft < scrollLeft) scroller.scrollLeft = cardLeft - 12;
+                else if (cardRight > scrollRight) scroller.scrollLeft = cardRight - scroller.clientWidth + 12;
+            }
+            // Scroll the row into view vertically
+            card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+    },
 
+    // Discover view: CSS grid of all cards
+    _handleStremioGridKeys(e) {
+        const key = e.key;
+        const cards = [...document.querySelectorAll('#stremioDiscoverGrid .stremio-poster-card')];
+        if (!cards.length) {
+            if (key === 'Escape' || key === 'Backspace' || key === 'GoBack') { e.preventDefault(); this.showHome(); }
+            return;
+        }
+
+        switch(key) {
+            case 'ArrowRight':
+                e.preventDefault();
+                this._stremioIdx = Math.min(cards.length - 1, this._stremioIdx + 1);
+                this._focusElement(cards, this._stremioIdx);
+                break;
+            case 'ArrowLeft':
+                e.preventDefault();
+                this._stremioIdx = Math.max(0, this._stremioIdx - 1);
+                this._focusElement(cards, this._stremioIdx);
+                break;
+            case 'ArrowDown': {
+                e.preventDefault();
+                const cols = this._getGridCols(cards[0]);
+                const next = this._stremioIdx + cols;
+                if (next < cards.length) {
+                    this._stremioIdx = next;
+                    this._focusElement(cards, this._stremioIdx);
+                }
+                break;
+            }
+            case 'ArrowUp': {
+                e.preventDefault();
+                const cols = this._getGridCols(cards[0]);
+                const prev = this._stremioIdx - cols;
+                if (prev >= 0) {
+                    this._stremioIdx = prev;
+                    this._focusElement(cards, this._stremioIdx);
+                } else {
+                    this._focusZone = 'nav';
+                    this._focusNav();
+                }
+                break;
+            }
+            case 'Enter':
+                e.preventDefault();
+                if (cards[this._stremioIdx]) cards[this._stremioIdx].click();
+                break;
+            case 'Escape': case 'Backspace': case 'GoBack':
+                e.preventDefault();
+                this.showHome();
+                break;
+        }
+    },
+
+    // ============ Focus helpers ============
+
+    _clearFocus() {
+        document.querySelectorAll('.remote-focus').forEach(el => el.classList.remove('remote-focus'));
+    },
+
+    _focusElement(items, idx) {
+        this._clearFocus();
+        if (idx >= 0 && items[idx]) {
+            items[idx].classList.add('remote-focus');
+            items[idx].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+    },
+
+    _focusNav() {
+        this._clearFocus();
+        const navBtns = [...document.querySelectorAll('.nav-btn')];
+        if (navBtns[this._navIdx]) {
+            navBtns[this._navIdx].classList.add('remote-focus');
+        }
+    },
+
+    _sidebarIdx: 0,
+    _getSidebarItems() {
+        return [...document.querySelectorAll('#categoryList .category-item')];
+    },
+
+    _focusSidebar() {
+        this._clearFocus();
+        const items = this._getSidebarItems();
+        if (items[this._sidebarIdx]) {
+            items[this._sidebarIdx].classList.add('remote-focus');
+            items[this._sidebarIdx].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+    },
+
+    _getContentItems() {
+        const cards = [...document.querySelectorAll('#contentGrid .stream-card')];
+        return cards.filter(c => c.style.display !== 'none');
+    },
+
+    _focusContent() {
+        this._clearFocus();
+        const items = this._getContentItems();
+        if (this._focusedIdx < 0) this._focusedIdx = 0;
+        if (this._focusedIdx >= items.length) this._focusedIdx = Math.max(0, items.length - 1);
+        if (items[this._focusedIdx]) {
+            items[this._focusedIdx].classList.add('remote-focus');
+            items[this._focusedIdx].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+    },
+
+    // Get number of columns in a CSS grid by comparing element positions
+    _getGridCols(firstEl) {
+        if (!firstEl || !firstEl.parentElement) return 1;
+        const children = [...firstEl.parentElement.children].filter(c => c.style.display !== 'none');
+        if (children.length < 2) return 1;
+        const firstTop = children[0].getBoundingClientRect().top;
+        for (let i = 1; i < children.length; i++) {
+            if (children[i].getBoundingClientRect().top !== firstTop) return i;
+        }
+        return children.length; // All on one row
+    },
+
+    // Move within a grid layout (content grid)
+    _moveInGrid(step, direction) {
+        const items = this._getContentItems();
+        if (!items.length) return;
+        if (this._focusedIdx < 0) this._focusedIdx = 0;
+
+        const cols = this._getGridCols(items[0]);
+        let newIdx = this._focusedIdx;
+
+        if (direction === 'up') {
+            newIdx = this._focusedIdx - cols;
+            if (newIdx < 0) {
+                // Move to nav
+                this._focusZone = 'nav';
+                this._focusNav();
+                return;
+            }
+        } else if (direction === 'down') {
+            newIdx = this._focusedIdx + cols;
+            if (newIdx >= items.length) newIdx = items.length - 1;
+        } else if (direction === 'left') {
+            newIdx = Math.max(0, this._focusedIdx - 1);
+        } else if (direction === 'right') {
+            newIdx = Math.min(items.length - 1, this._focusedIdx + 1);
+        }
+
+        this._focusedIdx = newIdx;
+        this._focusContent();
+    },
+
+    _focusGuideRow(channels, progRows) {
+        this._clearFocus();
         const idx = this._guideFocusRow;
         if (this._guideFocusSide === 'channels' && channels[idx]) {
             channels[idx].classList.add('remote-focus');
             channels[idx].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         } else if (this._guideFocusSide === 'programs' && progRows[idx]) {
             progRows[idx].classList.add('remote-focus');
-            // Also scroll the whole container so the row is visible
             const scrollArea = document.getElementById('epgScrollArea');
             const rowTop = progRows[idx].offsetTop;
             const visible = scrollArea.scrollTop + scrollArea.clientHeight;
-            if (rowTop < scrollArea.scrollTop + 40) {
-                scrollArea.scrollTop = rowTop - 40;
-            } else if (rowTop + 52 > visible) {
-                scrollArea.scrollTop = rowTop + 52 - scrollArea.clientHeight;
-            }
+            if (rowTop < scrollArea.scrollTop + 40) scrollArea.scrollTop = rowTop - 40;
+            else if (rowTop + 52 > visible) scrollArea.scrollTop = rowTop + 52 - scrollArea.clientHeight;
         }
-
-        // Update now bar
         this._epgSelectedIdx = idx;
         this.updateEpgNowBar();
-    },
-
-    getFocusableItems() {
-        const cards = [...document.querySelectorAll('#contentGrid .stream-card')];
-        return cards.filter(c => c.style.display !== 'none');
-    },
-
-    focusItem(items) {
-        document.querySelectorAll('.remote-focus').forEach(el => el.classList.remove('remote-focus'));
-        if (this._focusedIdx >= 0 && items[this._focusedIdx]) {
-            const el = items[this._focusedIdx];
-            el.classList.add('remote-focus');
-            el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        }
     },
 
     navigateTab(direction) {
@@ -402,9 +965,11 @@ const App = {
         const newIdx = Math.max(0, Math.min(navBtns.length - 1, activeIdx + direction));
         if (newIdx !== activeIdx) {
             navBtns[newIdx].click();
-            this._focusedIdx = -1;
+            this._focusedIdx = 0;
+            this._sidebarIdx = 0;
             this._guideFocusRow = 0;
             this._guideFocusSide = 'channels';
+            this._stremioIdx = 0;
         }
     },
 
@@ -553,6 +1118,8 @@ const App = {
         if (this.hls) { this.hls.destroy(); this.hls = null; }
         document.getElementById('playerOverlay')?.classList.add('hidden');
         history.pushState({ screen: 'home' }, '', '#home');
+        this._homeFocusIdx = 0;
+        this._clearFocus();
     },
 
     openSection(page) {
@@ -575,14 +1142,21 @@ const App = {
 
     navigateTo(page) {
         this.currentPage = page;
+        // Reset focus state for new page
+        this._focusZone = 'content';
+        this._focusedIdx = 0;
+        this._sidebarIdx = 0;
+        this._guideFocusRow = 0;
+        this._guideFocusSide = 'channels';
+        this._stremioIdx = 0;
+        this._clearFocus();
+
         const sidebar = document.getElementById('categorySidebar');
         const stremioPanel = document.getElementById('stremioPanel');
         const contentArea = document.querySelector('.content-area');
         const grid = document.getElementById('contentGrid');
         const emptyState = document.getElementById('emptyState');
         const backBtn = document.getElementById('btnBack');
-        const sourceToggle = document.querySelector('.source-toggle');
-
         sidebar.classList.remove('hidden');
         stremioPanel.classList.add('hidden');
         contentArea.style.display = 'flex';
@@ -590,7 +1164,6 @@ const App = {
         grid.style.display = '';
         backBtn.classList.add('hidden');
         emptyState.classList.remove('hidden');
-        sourceToggle.style.display = 'flex';
 
         const epgPanel = document.getElementById('epgPanel');
         epgPanel.classList.add('hidden');
@@ -604,7 +1177,6 @@ const App = {
                 epgPanel.classList.remove('hidden');
                 emptyState.classList.add('hidden');
                 grid.style.display = 'none';
-                sourceToggle.style.display = 'none';
                 this.loadCategories('live');
                 this.epgDateOffset = 0;
                 this.loadEpg();
@@ -619,19 +1191,16 @@ const App = {
                 sidebar.classList.add('hidden');
                 contentArea.style.display = 'none';
                 stremioPanel.classList.remove('hidden');
-                sourceToggle.style.display = 'none';
                 this.initStremio();
                 break;
             case 'favorites':
                 sidebar.classList.add('hidden');
                 emptyState.classList.add('hidden');
-                sourceToggle.style.display = 'none';
                 this.renderFavorites();
                 break;
             case 'settings':
                 sidebar.classList.add('hidden');
                 emptyState.classList.add('hidden');
-                sourceToggle.style.display = 'none';
                 this.renderSettings();
                 break;
         }
@@ -701,7 +1270,24 @@ const App = {
                 }
             });
 
-            this.categories = [...allCats.values()].sort((a, b) => a.category_name.localeCompare(b.category_name));
+            // Sort: "Full HD USA" first (Marble priority), then all USA categories, then rest alphabetical
+            this.categories = [...allCats.values()].sort((a, b) => {
+                const aName = (a.category_name || '').toLowerCase();
+                const bName = (b.category_name || '').toLowerCase();
+                const aFullHdUsa = aName.includes('full hd') && aName.includes('usa');
+                const bFullHdUsa = bName.includes('full hd') && bName.includes('usa');
+                const aUsa = aName.includes('usa') || aName.includes('us ') || aName.includes('united states');
+                const bUsa = bName.includes('usa') || bName.includes('us ') || bName.includes('united states');
+
+                // Full HD USA always first
+                if (aFullHdUsa && !bFullHdUsa) return -1;
+                if (bFullHdUsa && !aFullHdUsa) return 1;
+                // Then other USA categories
+                if (aUsa && !bUsa) return -1;
+                if (bUsa && !aUsa) return 1;
+                // Then alphabetical
+                return aName.localeCompare(bName);
+            });
             console.log(`[Categories] Found ${this.categories.length} categories from ${servers.length} servers`);
             categoryList.innerHTML = '';
 
@@ -711,9 +1297,18 @@ const App = {
             }
 
             const allEl = document.createElement('div');
-            allEl.className = 'category-item';
+            allEl.className = 'category-item active';
             allEl.innerHTML = '<span class="material-icons">folder</span> All';
-            allEl.addEventListener('click', () => this.loadStreams(type, null));
+            allEl.addEventListener('click', () => {
+                document.querySelectorAll('.category-item').forEach(c => c.classList.remove('active'));
+                allEl.classList.add('active');
+                if (this.currentPage === 'guide') {
+                    this.epgCategory = 'all';
+                    this.renderEpgFiltered();
+                } else {
+                    this.loadStreams(type, null);
+                }
+            });
             categoryList.appendChild(allEl);
 
             this.categories.forEach(cat => {
@@ -723,7 +1318,12 @@ const App = {
                 el.addEventListener('click', () => {
                     document.querySelectorAll('.category-item').forEach(c => c.classList.remove('active'));
                     el.classList.add('active');
-                    this.loadStreams(type, cat.category_id);
+                    if (this.currentPage === 'guide') {
+                        this.epgCategory = cat.category_id;
+                        this.renderEpgFiltered();
+                    } else {
+                        this.loadStreams(type, cat.category_id);
+                    }
                 });
                 categoryList.appendChild(el);
             });
@@ -834,12 +1434,38 @@ const App = {
         `;
         card.addEventListener('click', () => {
             if (type === 'vod') {
-                const ext = item.container_extension || 'mp4';
-                const baseUrl = DNS[item._source].url;
-                const url = `${baseUrl}/movie/${encodeURIComponent(this.session.username)}/${encodeURIComponent(this.session.token)}/${item.stream_id}.${ext}`;
-                this.openPlayer(url, name, { id: String(item.stream_id), type: 'vod', icon, source: item._source });
+                this.openMediaDetail({
+                    name,
+                    poster: icon,
+                    background: icon,
+                    type: 'movie',
+                    year: item.year || '',
+                    genres: item.genre || '',
+                    description: item.plot || '',
+                    imdbRating: item.rating || '',
+                    source: item._source,
+                    playAction: () => {
+                        const ext = item.container_extension || 'mp4';
+                        const baseUrl = DNS[item._source].url;
+                        const url = `${baseUrl}/movie/${encodeURIComponent(this.session.username)}/${encodeURIComponent(this.session.token)}/${item.stream_id}.${ext}`;
+                        this.openPlayer(url, name, { id: String(item.stream_id), type: 'vod', icon, source: item._source });
+                    }
+                });
             } else {
-                this.loadSeriesDetail(item.series_id, name, item._source);
+                this.openMediaDetail({
+                    name,
+                    poster: icon,
+                    background: icon,
+                    type: 'series',
+                    year: item.year || '',
+                    genres: item.genre || '',
+                    description: item.plot || '',
+                    imdbRating: item.rating || '',
+                    source: item._source,
+                    seriesAction: () => {
+                        this.loadSeriesDetail(item.series_id, name, item._source);
+                    }
+                });
             }
         });
         grid.appendChild(card);
@@ -892,17 +1518,17 @@ const App = {
     },
 
     filterBySource() {
-        document.querySelectorAll('.stream-card').forEach(card => {
-            const src = card.dataset.source;
-            if (this.currentSource === 'all' || src === this.currentSource) {
-                card.style.display = '';
-            } else {
-                card.style.display = 'none';
-            }
-        });
-        // Reload categories for the current page
-        if (['live', 'vod', 'series'].includes(this.currentPage)) {
-            this.loadCategories(this.currentPage);
+        // Sync EPG source with main source toggle
+        this.epgSource = this.currentSource;
+        const page = this.currentPage;
+        if (page === 'guide') {
+            this.loadCategories('live');
+            this.loadEpg();
+        } else if (['live', 'vod', 'series'].includes(page)) {
+            this.loadCategories(page);
+            // Clear current streams - they'll reload when user picks a category
+            document.getElementById('contentGrid').innerHTML = '';
+            document.getElementById('emptyState').classList.remove('hidden');
         }
     },
 
@@ -982,6 +1608,249 @@ const App = {
             // Already on guide, just make sure it's visible
             document.getElementById('epgPanel').classList.remove('hidden');
         }
+    },
+
+    // === Trailer System ===
+    async openTrailer(name, year, type, imdbId) {
+        const overlay = document.getElementById('trailerOverlay');
+        const titleEl = document.getElementById('trailerTitle');
+        const player = document.getElementById('trailerPlayer');
+        const errorEl = document.getElementById('trailerError');
+
+        overlay.classList.remove('hidden');
+        titleEl.textContent = `${name} - Trailer`;
+        player.innerHTML = '';
+        errorEl.classList.add('hidden');
+        this.showLoader();
+
+        try {
+            const videoId = await this._findTrailerVideoId(name, year, type, imdbId);
+            if (videoId) {
+                player.innerHTML = `<iframe src="https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0" allowfullscreen allow="autoplay; encrypted-media"></iframe>`;
+            } else {
+                errorEl.textContent = 'No trailer found for this title.';
+                errorEl.classList.remove('hidden');
+            }
+        } catch(e) {
+            console.error('[Trailer] Error:', e);
+            errorEl.textContent = 'Failed to load trailer. Please try again.';
+            errorEl.classList.remove('hidden');
+        } finally {
+            this.hideLoader();
+        }
+    },
+
+    async _findTrailerVideoId(name, year, type, imdbId) {
+        // Strategy 1: If we have an IMDB ID, get trailer directly from Cinemeta meta
+        if (imdbId) {
+            try {
+                const metaType = (type === 'series') ? 'series' : 'movie';
+                const url = `https://v3-cinemeta.strem.io/meta/${metaType}/${imdbId}.json`;
+                console.log(`[Trailer] Fetching Cinemeta meta: ${url}`);
+                const resp = await this.fetchWithTimeout(url, 8000);
+                const data = await resp.json();
+                const trailers = data.meta?.trailers || [];
+                if (trailers.length > 0 && trailers[0].source) {
+                    console.log(`[Trailer] Found from Cinemeta meta: ${trailers[0].source}`);
+                    return trailers[0].source;
+                }
+                // Also check trailerStreams
+                const streams = data.meta?.trailerStreams || [];
+                if (streams.length > 0 && streams[0].ytId) {
+                    console.log(`[Trailer] Found from Cinemeta trailerStreams: ${streams[0].ytId}`);
+                    return streams[0].ytId;
+                }
+            } catch(e) {
+                console.warn('[Trailer] Cinemeta meta fetch failed:', e.message);
+            }
+        }
+
+        // Strategy 2: Search Cinemeta by name to find IMDB ID, then get trailer
+        if (!imdbId) {
+            try {
+                const searchType = (type === 'series') ? 'series' : 'movie';
+                const searchUrl = `https://v3-cinemeta.strem.io/catalog/${searchType}/top/search=${encodeURIComponent(name)}.json`;
+                console.log(`[Trailer] Searching Cinemeta: ${name}`);
+                const resp = await this.fetchWithTimeout(searchUrl, 8000);
+                const data = await resp.json();
+                if (data.metas?.length > 0) {
+                    const match = data.metas[0];
+                    const foundId = match.imdb_id || (match.id?.startsWith('tt') ? match.id : null);
+                    if (foundId) {
+                        // Recurse with IMDB ID
+                        return this._findTrailerVideoId(name, year, type, foundId);
+                    }
+                }
+            } catch(e) {
+                console.warn('[Trailer] Cinemeta search failed:', e.message);
+            }
+        }
+
+        // Strategy 3: Fallback to Piped API search
+        const query = `${name} ${year || ''} official trailer`.trim();
+        const pipedInstances = [
+            'https://api.piped.private.coffee',
+            'https://pipedapi.kavin.rocks',
+            'https://pipedapi.orangenet.cc'
+        ];
+        for (const base of pipedInstances) {
+            try {
+                const url = `${base}/search?q=${encodeURIComponent(query)}&filter=videos`;
+                console.log(`[Trailer] Trying Piped: ${base}`);
+                const resp = await this.fetchWithTimeout(url, 6000);
+                const data = await resp.json();
+                const items = data.items || data;
+                if (Array.isArray(items) && items.length > 0) {
+                    const videoId = items[0].url?.replace('/watch?v=', '') || items[0].id;
+                    if (videoId) {
+                        console.log(`[Trailer] Found via Piped: ${videoId}`);
+                        return videoId;
+                    }
+                }
+            } catch(e) {
+                console.warn(`[Trailer] Piped ${base} failed:`, e.message);
+            }
+        }
+
+        return null;
+    },
+
+    closeTrailer() {
+        const overlay = document.getElementById('trailerOverlay');
+        const player = document.getElementById('trailerPlayer');
+        player.innerHTML = '';
+        overlay.classList.add('hidden');
+    },
+
+    // === Universal Media Detail Modal ===
+    // Works for IPTV VOD, series, and enriches Stremio detail
+    async openMediaDetail(info) {
+        // info: { name, poster, background, type, year, genres, description, imdbRating, source, playAction, seriesAction, imdbId }
+        const modal = document.getElementById('mediaDetailModal');
+        const bg = document.getElementById('mediaDetailBg');
+        const body = document.getElementById('mediaDetailBody');
+
+        bg.style.backgroundImage = info.background ? `url(${info.background})` : (info.poster ? `url(${info.poster})` : 'none');
+        modal.classList.remove('hidden');
+        this.showLoader();
+
+        // Start with what we have
+        let name = info.name || 'Unknown';
+        let poster = info.poster || '';
+        let year = info.year || '';
+        let genres = info.genres || '';
+        let desc = info.description || '';
+        let imdbRating = info.imdbRating || '';
+        let mpaa = '';
+        let rtScore = '';
+        let imdbId = info.imdbId || '';
+
+        // Try to enrich from Cinemeta search if we don't have details
+        if (!desc || !poster || !imdbId) {
+            try {
+                const searchType = (info.type === 'series') ? 'series' : 'movie';
+                const cineUrl = `https://v3-cinemeta.strem.io/catalog/${searchType}/top/search=${encodeURIComponent(name)}.json`;
+                const cineResp = await this.fetchWithTimeout(cineUrl, 6000);
+                const cineData = await cineResp.json();
+                if (cineData.metas?.length > 0) {
+                    const match = cineData.metas[0];
+                    if (!poster && match.poster) poster = match.poster;
+                    if (!desc && match.description) desc = match.description;
+                    if (!imdbRating && match.imdbRating) imdbRating = match.imdbRating;
+                    if (!year && (match.releaseInfo || match.year)) year = match.releaseInfo || match.year;
+                    if (!genres && match.genres) genres = match.genres.join(', ');
+                    if (!imdbId && match.imdb_id) imdbId = match.imdb_id;
+                    if (!imdbId && match.id?.startsWith('tt')) imdbId = match.id;
+                    if (!info.background && match.background) {
+                        bg.style.backgroundImage = `url(${match.background})`;
+                    }
+                }
+            } catch(e) {
+                console.warn('[MediaDetail] Cinemeta search failed:', e.message);
+            }
+        }
+
+        // Fetch OMDB for MPAA rating + Rotten Tomatoes score
+        if (imdbId) {
+            try {
+                const omdbKey = localStorage.getItem('sv_omdb_key') || '';
+                if (omdbKey) {
+                    const omdbUrl = `https://www.omdbapi.com/?i=${imdbId}&apikey=${omdbKey}`;
+                    const omdbResp = await this.fetchWithTimeout(omdbUrl, 5000);
+                    const omdb = await omdbResp.json();
+                    if (omdb.Response !== 'False') {
+                        if (omdb.Rated && omdb.Rated !== 'N/A') mpaa = omdb.Rated;
+                        const rt = (omdb.Ratings || []).find(r => r.Source === 'Rotten Tomatoes');
+                        if (rt) rtScore = rt.Value;
+                        if (!imdbRating && omdb.imdbRating && omdb.imdbRating !== 'N/A') imdbRating = omdb.imdbRating;
+                        if (!desc && omdb.Plot && omdb.Plot !== 'N/A') desc = omdb.Plot;
+                        if (!genres && omdb.Genre && omdb.Genre !== 'N/A') genres = omdb.Genre;
+                        if (!year && omdb.Year) year = omdb.Year;
+                    }
+                }
+            } catch(e) {
+                console.warn('[MediaDetail] OMDB failed:', e.message);
+            }
+        }
+
+        // Build ratings badges
+        let ratingsHtml = '';
+        if (mpaa) ratingsHtml += `<span class="media-rating-badge mpaa-badge">${mpaa}</span>`;
+        if (imdbRating) ratingsHtml += `<span class="media-rating-badge imdb-badge"><span class="material-icons">star</span> ${imdbRating}</span>`;
+        if (rtScore) ratingsHtml += `<span class="media-rating-badge rt-badge">🍅 ${rtScore}</span>`;
+
+        // Build action buttons
+        let actionsHtml = '';
+        if (info.playAction) {
+            actionsHtml += `<button class="media-action-btn media-action-play" id="btnMediaPlay"><span class="material-icons">play_arrow</span> Play</button>`;
+        }
+        if (info.seriesAction) {
+            actionsHtml += `<button class="media-action-btn media-action-play" id="btnMediaEpisodes"><span class="material-icons">list</span> Episodes</button>`;
+        }
+        actionsHtml += `<button class="media-action-btn media-action-trailer" id="btnMediaTrailer"><span class="material-icons">play_circle</span> Watch Trailer</button>`;
+
+        body.innerHTML = `
+            <div class="media-detail-header">
+                <div class="media-detail-poster">
+                    ${poster ? `<img src="${poster}" onerror="this.style.display='none'">` : '<span class="material-icons" style="font-size:64px;color:#484f58;display:flex;align-items:center;justify-content:center;height:100%">movie</span>'}
+                </div>
+                <div class="media-detail-info">
+                    <h2 class="media-detail-title">${name}</h2>
+                    ${ratingsHtml ? `<div class="media-detail-ratings">${ratingsHtml}</div>` : ''}
+                    <div class="media-detail-meta">
+                        ${year ? `<span>${year}</span>` : ''}
+                        ${info.type ? `<span style="text-transform:capitalize">${info.type}</span>` : ''}
+                        ${info.source && DNS[info.source] ? `<span class="source-tag ${DNS[info.source].color}" style="font-size:11px;padding:2px 8px">${DNS[info.source].name}</span>` : ''}
+                    </div>
+                    ${genres ? `<div class="media-detail-genres">${genres}</div>` : ''}
+                    ${desc ? `<p class="media-detail-desc">${desc}</p>` : ''}
+                    <div class="media-detail-actions">${actionsHtml}</div>
+                </div>
+            </div>
+        `;
+
+        // Wire up buttons
+        if (info.playAction) {
+            document.getElementById('btnMediaPlay').addEventListener('click', () => {
+                this.closeMediaDetail();
+                info.playAction();
+            });
+        }
+        if (info.seriesAction) {
+            document.getElementById('btnMediaEpisodes').addEventListener('click', () => {
+                this.closeMediaDetail();
+                info.seriesAction();
+            });
+        }
+        document.getElementById('btnMediaTrailer').addEventListener('click', () => {
+            this.openTrailer(name, year, info.type || 'movie', imdbId);
+        });
+
+        this.hideLoader();
+    },
+
+    closeMediaDetail() {
+        document.getElementById('mediaDetailModal').classList.add('hidden');
     },
 
     _tryPlay(url, video, errorEl, meta) {
@@ -1185,11 +2054,36 @@ const App = {
         }
 
         const rows = [];
-        // Load first catalog from each addon in parallel
+
+        // Load Trending Movies & Trending Shows from Cinemeta first
+        const cinemetaAddon = this.stremioAddons.find(a => a.manifest?.id === 'com.linvo.cinemeta');
+        const trendingPromises = [];
+        if (cinemetaAddon) {
+            trendingPromises.push(
+                this.fetchWithTimeout(`${cinemetaAddon.url}/catalog/movie/top.json`, 10000)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.metas?.length > 0) {
+                            rows.push({ title: 'Trending Movies', type: 'movie', metas: data.metas.slice(0, 30), addon: cinemetaAddon, _priority: 0 });
+                        }
+                    }).catch(e => console.warn('[Stremio] Trending movies failed:', e.message)),
+                this.fetchWithTimeout(`${cinemetaAddon.url}/catalog/series/top.json`, 10000)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.metas?.length > 0) {
+                            rows.push({ title: 'Trending Shows', type: 'series', metas: data.metas.slice(0, 30), addon: cinemetaAddon, _priority: 1 });
+                        }
+                    }).catch(e => console.warn('[Stremio] Trending shows failed:', e.message))
+            );
+        }
+
+        // Load regular catalogs from each addon in parallel
         const catalogPromises = this.stremioAddons.map(async (addon) => {
             const catalogs = addon.manifest?.catalogs || [];
             const results = [];
             for (const catalog of catalogs.slice(0, 3)) {
+                // Skip the 'top' catalogs if we already loaded them as trending
+                if (cinemetaAddon && addon.url === cinemetaAddon.url && catalog.id === 'top') continue;
                 try {
                     const url = `${addon.url}/catalog/${catalog.type}/${catalog.id}.json`;
                     const resp = await this.fetchWithTimeout(url, 10000);
@@ -1199,7 +2093,8 @@ const App = {
                             title: `${addon.name} - ${catalog.name || catalog.id}`,
                             type: catalog.type,
                             metas: data.metas.slice(0, 30),
-                            addon
+                            addon,
+                            _priority: 10
                         });
                     }
                 } catch(e) {
@@ -1209,10 +2104,10 @@ const App = {
             return results;
         });
 
-        const allResults = await Promise.allSettled(catalogPromises);
-        allResults.forEach(r => {
-            if (r.status === 'fulfilled') rows.push(...r.value);
-        });
+        await Promise.allSettled([...trendingPromises, ...catalogPromises.map(async p => {
+            const r = await p;
+            if (r) rows.push(...r);
+        })]);
 
         content.innerHTML = '';
         if (rows.length === 0) {
@@ -1220,10 +2115,15 @@ const App = {
             return;
         }
 
+        // Sort: trending first, then regular catalogs
+        rows.sort((a, b) => (a._priority || 10) - (b._priority || 10));
+
         rows.forEach(row => {
             const section = document.createElement('div');
             section.className = 'stremio-catalog-row';
-            section.innerHTML = `<h3 class="stremio-row-title">${row.title}</h3>`;
+            const isTrending = (row._priority || 10) < 10;
+            const icon = isTrending ? '<span class="material-icons" style="font-size:18px;color:#f5c518;vertical-align:middle;margin-right:4px">trending_up</span>' : '';
+            section.innerHTML = `<h3 class="stremio-row-title">${icon}${row.title}</h3>`;
 
             const scroller = document.createElement('div');
             scroller.className = 'stremio-row-scroller';
@@ -1422,47 +2322,82 @@ const App = {
         const bg = document.getElementById('stremioDetailBg');
         const body = document.getElementById('stremioDetailBody');
 
-        // Set background
         const bgImg = meta.background || meta.poster || '';
         bg.style.backgroundImage = bgImg ? `url(${bgImg})` : 'none';
-
         detail.classList.remove('hidden');
 
         const year = meta.releaseInfo || meta.year || '';
-        const rating = meta.imdbRating ? `<span class="stremio-rating"><span class="material-icons" style="font-size:16px;color:#f5c518;vertical-align:middle">star</span> ${meta.imdbRating}</span>` : '';
         const genres = meta.genres?.join(', ') || '';
         const desc = meta.description || '';
         const type = meta.type || 'movie';
+        let imdbRating = meta.imdbRating || '';
 
-        body.innerHTML = `
-            <div class="stremio-detail-header">
-                <div class="stremio-detail-poster">
-                    ${meta.poster ? `<img src="${meta.poster}">` : '<span class="material-icons" style="font-size:64px;color:#484f58">movie</span>'}
-                </div>
-                <div class="stremio-detail-info">
-                    <h2 class="stremio-detail-title">${meta.name || 'Unknown'}</h2>
-                    <div class="stremio-detail-meta">
-                        ${year ? `<span>${year}</span>` : ''}
-                        ${rating}
-                        ${type ? `<span class="stremio-type-badge">${type}</span>` : ''}
+        // Fetch OMDB for MPAA + RT (non-blocking, updates UI when ready)
+        let mpaa = '';
+        let rtScore = '';
+        const imdbId = meta.imdb_id || (meta.id?.startsWith('tt') ? meta.id : '');
+
+        // Build initial ratings
+        const buildRatings = () => {
+            let html = '';
+            if (mpaa) html += `<span class="media-rating-badge mpaa-badge">${mpaa}</span>`;
+            if (imdbRating) html += `<span class="media-rating-badge imdb-badge"><span class="material-icons">star</span> ${imdbRating}</span>`;
+            if (rtScore) html += `<span class="media-rating-badge rt-badge">🍅 ${rtScore}</span>`;
+            return html;
+        };
+
+        const renderBody = () => {
+            body.innerHTML = `
+                <div class="stremio-detail-header">
+                    <div class="stremio-detail-poster">
+                        ${meta.poster ? `<img src="${meta.poster}">` : '<span class="material-icons" style="font-size:64px;color:#484f58">movie</span>'}
                     </div>
-                    ${genres ? `<div class="stremio-detail-genres">${genres}</div>` : ''}
-                    ${desc ? `<p class="stremio-detail-desc">${desc}</p>` : ''}
-                    <div class="stremio-play-actions" id="stremioPlayActions" style="display:none">
-                        <button class="stremio-autoplay-btn" id="btnAutoPlay">
-                            <span class="material-icons">play_arrow</span> Auto Play
-                        </button>
-                        <button class="stremio-selectstream-btn" id="btnSelectStream">
-                            <span class="material-icons">list</span> Select Stream
+                    <div class="stremio-detail-info">
+                        <h2 class="stremio-detail-title">${meta.name || 'Unknown'}</h2>
+                        <div class="media-detail-ratings" id="stremioRatings">${buildRatings()}</div>
+                        <div class="stremio-detail-meta">
+                            ${year ? `<span>${year}</span>` : ''}
+                            ${type ? `<span class="stremio-type-badge">${type}</span>` : ''}
+                        </div>
+                        ${genres ? `<div class="stremio-detail-genres">${genres}</div>` : ''}
+                        ${desc ? `<p class="stremio-detail-desc">${desc}</p>` : ''}
+                        <div class="stremio-play-actions" id="stremioPlayActions" style="display:none">
+                            <button class="stremio-autoplay-btn" id="btnAutoPlay">
+                                <span class="material-icons">play_arrow</span> Auto Play
+                            </button>
+                        </div>
+                        <button class="btn-trailer" id="btnTrailer">
+                            <span class="material-icons">play_circle</span> Watch Trailer
                         </button>
                     </div>
                 </div>
-            </div>
-            <div class="stremio-streams-section">
-                <h3><span class="material-icons" style="font-size:20px;vertical-align:middle;margin-right:6px">play_circle</span>Streams</h3>
-                <div id="stremioStreamList" class="stremio-stream-list"></div>
-            </div>
-        `;
+                <div class="stremio-streams-section">
+                    <h3><span class="material-icons" style="font-size:20px;vertical-align:middle;margin-right:6px">play_circle</span>Streams</h3>
+                    <div id="stremioStreamList" class="stremio-stream-list"></div>
+                </div>
+            `;
+            document.getElementById('btnTrailer').addEventListener('click', () => {
+                this.openTrailer(meta.name, year, type, imdbId);
+            });
+        };
+
+        renderBody();
+
+        // Fetch OMDB in background and update ratings when ready
+        if (imdbId) {
+            const omdbKey = localStorage.getItem('sv_omdb_key') || '';
+            if (omdbKey) {
+                this._fetchOmdb(imdbId, omdbKey).then(omdb => {
+                    if (omdb) {
+                        if (omdb.mpaa) mpaa = omdb.mpaa;
+                        if (omdb.rt) rtScore = omdb.rt;
+                        if (omdb.imdbRating && !imdbRating) imdbRating = omdb.imdbRating;
+                        const ratingsEl = document.getElementById('stremioRatings');
+                        if (ratingsEl) ratingsEl.innerHTML = buildRatings();
+                    }
+                });
+            }
+        }
 
         // If series, also try to show seasons/episodes
         if (type === 'series' && meta.videos?.length > 0) {
@@ -1470,6 +2405,24 @@ const App = {
         } else {
             this._loadStreamsForMeta(meta, addon);
         }
+    },
+
+    async _fetchOmdb(imdbId, apiKey) {
+        try {
+            const resp = await this.fetchWithTimeout(`https://www.omdbapi.com/?i=${imdbId}&apikey=${apiKey}`, 5000);
+            const data = await resp.json();
+            if (data.Response !== 'False') {
+                const rt = (data.Ratings || []).find(r => r.Source === 'Rotten Tomatoes');
+                return {
+                    mpaa: (data.Rated && data.Rated !== 'N/A') ? data.Rated : '',
+                    rt: rt ? rt.Value : '',
+                    imdbRating: (data.imdbRating && data.imdbRating !== 'N/A') ? data.imdbRating : ''
+                };
+            }
+        } catch(e) {
+            console.warn('[OMDB] Failed:', e.message);
+        }
+        return null;
     },
 
     // Parse stream quality/seeders from Torrentio/Comet stream title/description
@@ -1565,15 +2518,14 @@ const App = {
             return;
         }
 
-        // Show auto-play / select buttons
+        // Show auto-play button
         const actions = document.getElementById('stremioPlayActions');
         if (actions) {
             actions.style.display = 'flex';
             document.getElementById('btnAutoPlay').onclick = () => this._autoPlay(allStreams, meta);
-            document.getElementById('btnSelectStream').onclick = () => this._showStreamList(allStreams, meta);
         }
 
-        // Show stream list by default
+        // Show stream list
         this._showStreamList(allStreams, meta);
         this.hideLoader();
     },
@@ -1613,12 +2565,28 @@ const App = {
         }
     },
 
-    _showStreamList(streams, meta) {
-        const list = document.getElementById('stremioStreamList');
+    _showStreamList(streams, meta, container) {
+        const list = container || document.getElementById('stremioStreamList');
         if (!list) return;
-        list.innerHTML = '';
+        if (!container) list.innerHTML = '';
 
-        streams.forEach(stream => {
+        // Only show 4K streams - filter out anything below 4K
+        const filtered = streams.filter(s => {
+            const info = this._parseStreamInfo(s);
+            return info.resolution === '2160p';
+        });
+
+        // If no 4K streams, show all streams as fallback
+        const toShow = filtered.length > 0 ? filtered : streams;
+
+        if (filtered.length === 0 && streams.length > 0) {
+            const notice = document.createElement('div');
+            notice.style.cssText = 'padding:8px 12px;color:#f5c518;font-size:12px;opacity:0.7;';
+            notice.textContent = 'No 4K streams available — showing all qualities';
+            list.appendChild(notice);
+        }
+
+        toShow.forEach(stream => {
             const item = document.createElement('div');
             item.className = 'stremio-stream-item';
 
@@ -1627,7 +2595,6 @@ const App = {
             let desc = stream.description || '';
             const badge = stream._addonName;
             const needsDebrid = stream.infoHash && !stream.url;
-            const hasUrl = !!stream.url;
 
             // Build quality/seeder badges
             let badges = `<span class="stremio-stream-addon">${badge}</span>`;
@@ -1651,7 +2618,6 @@ const App = {
                     ${desc ? `<div class="stremio-stream-desc">${desc}</div>` : ''}
                 </div>
                 <div class="stremio-stream-badges">${badges}</div>
-                <span class="material-icons stremio-stream-play">play_circle</span>
             `;
 
             item.addEventListener('click', () => this._playStream(stream, meta));
@@ -1735,7 +2701,7 @@ const App = {
             return;
         }
 
-        // Auto play / select buttons for episodes
+        // Auto play button for episodes
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'stremio-play-actions';
         actionsDiv.style.display = 'flex';
@@ -1743,50 +2709,13 @@ const App = {
             <button class="stremio-autoplay-btn" id="btnEpAutoPlay">
                 <span class="material-icons">play_arrow</span> Auto Play
             </button>
-            <button class="stremio-selectstream-btn" id="btnEpSelectStream">
-                <span class="material-icons">list</span> Select Stream
-            </button>
         `;
         list.appendChild(actionsDiv);
 
-        const streamContainer = document.createElement('div');
-        streamContainer.id = 'epStreamContainer';
-        list.appendChild(streamContainer);
-
-        const showEpStreams = () => {
-            streamContainer.innerHTML = '';
-            allStreams.forEach(stream => {
-                const item = document.createElement('div');
-                item.className = 'stremio-stream-item';
-                const info = this._parseStreamInfo(stream);
-                const badge = stream._addonName;
-                const needsDebrid = stream.infoHash && !stream.url;
-
-                let badges = `<span class="stremio-stream-addon">${badge}</span>`;
-                if (info.resolution !== 'unknown') {
-                    const resColor = info.resolution === '2160p' ? '#f5c518' : info.resolution === '1080p' ? '#22c55e' : '#00D4FF';
-                    badges += ` <span class="stremio-stream-res" style="color:${resColor}">${info.resolution}</span>`;
-                }
-                if (info.seeders > 0) badges += ` <span class="stremio-stream-seeders">👤 ${info.seeders}</span>`;
-                if (info.size) badges += ` <span class="stremio-stream-size">${info.size}</span>`;
-                if (needsDebrid) badges += ` <span class="stremio-stream-debrid">⚡ Debrid</span>`;
-
-                item.innerHTML = `
-                    <div class="stremio-stream-info">
-                        <div class="stremio-stream-title">${stream.name || stream.title || 'Stream'}</div>
-                        <div class="stremio-stream-desc">${stream.description || ''}</div>
-                    </div>
-                    <div class="stremio-stream-badges">${badges}</div>
-                    <span class="material-icons stremio-stream-play">play_circle</span>
-                `;
-                item.addEventListener('click', () => this._playStream(stream, epMeta));
-                streamContainer.appendChild(item);
-            });
-        };
-
         document.getElementById('btnEpAutoPlay').addEventListener('click', () => this._autoPlay(allStreams, epMeta));
-        document.getElementById('btnEpSelectStream').addEventListener('click', showEpStreams);
-        showEpStreams();
+
+        // Show stream list directly
+        this._showStreamList(allStreams, epMeta, list);
         this.hideLoader();
     },
 
@@ -1872,33 +2801,88 @@ const App = {
         document.getElementById('stremioDetail').classList.add('hidden');
     },
 
+    // === EPG Clock & Timezone ===
+    _startEpgClock() {
+        this._updateEpgClock();
+        setInterval(() => this._updateEpgClock(), 1000);
+    },
+
+    _updateEpgClock() {
+        const el = document.getElementById('epgClock');
+        if (!el) return;
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-US', {
+            timeZone: this._userTz,
+            hour: 'numeric',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true
+        });
+        const tzShort = this._getTzAbbrev(this._userTz);
+        el.textContent = timeStr + ' ' + tzShort;
+    },
+
+    _getTzAbbrev(tz) {
+        const map = {
+            'America/New_York': 'ET',
+            'America/Chicago': 'CT',
+            'America/Denver': 'MT',
+            'America/Los_Angeles': 'PT',
+            'America/Anchorage': 'AKT',
+            'Pacific/Honolulu': 'HT'
+        };
+        return map[tz] || 'CT';
+    },
+
+    _openTzPicker() {
+        const modal = document.getElementById('tzModal');
+        modal.classList.remove('hidden');
+        // Highlight current selection
+        const btns = [...document.querySelectorAll('.tz-btn')];
+        btns.forEach(b => b.classList.toggle('active', b.dataset.tz === this._userTz));
+        // Set focus to current timezone
+        this._tzFocusIdx = btns.findIndex(b => b.dataset.tz === this._userTz);
+        if (this._tzFocusIdx < 0) this._tzFocusIdx = 0;
+        this._clearFocus();
+        if (btns[this._tzFocusIdx]) btns[this._tzFocusIdx].classList.add('remote-focus');
+    },
+
+    _handleTzModalKeys(e) {
+        const btns = [...document.querySelectorAll('.tz-btn')];
+        if (!btns.length) return;
+        switch(e.key) {
+            case 'ArrowUp':
+                e.preventDefault();
+                this._tzFocusIdx = Math.max(0, this._tzFocusIdx - 1);
+                this._focusElement(btns, this._tzFocusIdx);
+                break;
+            case 'ArrowDown':
+                e.preventDefault();
+                this._tzFocusIdx = Math.min(btns.length - 1, this._tzFocusIdx + 1);
+                this._focusElement(btns, this._tzFocusIdx);
+                break;
+            case 'Enter':
+                e.preventDefault();
+                if (btns[this._tzFocusIdx]) btns[this._tzFocusIdx].click();
+                break;
+            case 'Escape': case 'Backspace': case 'GoBack':
+                e.preventDefault();
+                document.getElementById('tzModal').classList.add('hidden');
+                break;
+        }
+    },
+
     // === EPG / TV Guide ===
     epgCache: {}, // Cache: serverKey -> { streamId -> [programs] }
 
     async loadEpg() {
         const channelList = document.getElementById('epgChannelList');
-        const dateLabel = document.getElementById('epgDate');
-
-        // Calculate target date
-        const now = new Date();
-        const targetDate = new Date(now);
-        targetDate.setDate(targetDate.getDate() + this.epgDateOffset);
-
-        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        if (this.epgDateOffset === 0) {
-            dateLabel.textContent = 'Today - ' + monthNames[targetDate.getMonth()] + ' ' + targetDate.getDate();
-        } else {
-            dateLabel.textContent = dayNames[targetDate.getDay()] + ', ' + monthNames[targetDate.getMonth()] + ' ' + targetDate.getDate();
-        }
 
         channelList.innerHTML = '';
         this.showLoader();
 
         try {
-            const allServers = [];
-            if (this.servers.marble?.success) allServers.push('marble');
-            if (this.servers.pony?.success) allServers.push('pony');
+            const allServers = this.getActiveServers();
 
             const allChannels = [];
             const catSet = new Map();
@@ -1936,13 +2920,19 @@ const App = {
             allChip.textContent = 'All';
             catBar.appendChild(allChip);
 
-            // Sort categories, put USA-related ones first
+            // Sort: Full HD USA first, then USA categories, then rest alphabetical
             const sortedCats = [...catSet.entries()].sort((a, b) => {
-                const aUSA = a[1].toLowerCase().includes('usa');
-                const bUSA = b[1].toLowerCase().includes('usa');
-                if (aUSA && !bUSA) return -1;
-                if (bUSA && !aUSA) return 1;
-                return a[1].localeCompare(b[1]);
+                const aName = a[1].toLowerCase();
+                const bName = b[1].toLowerCase();
+                const aFullHdUsa = aName.includes('full hd') && aName.includes('usa');
+                const bFullHdUsa = bName.includes('full hd') && bName.includes('usa');
+                const aUsa = aName.includes('usa') || aName.includes('us ') || aName.includes('united states');
+                const bUsa = bName.includes('usa') || bName.includes('us ') || bName.includes('united states');
+                if (aFullHdUsa && !bFullHdUsa) return -1;
+                if (bFullHdUsa && !aFullHdUsa) return 1;
+                if (aUsa && !bUsa) return -1;
+                if (bUsa && !aUsa) return 1;
+                return aName.localeCompare(bName);
             });
 
             sortedCats.forEach(([id, name]) => {
@@ -2479,9 +3469,22 @@ const App = {
                     <label>Premiumize</label>
                     <div class="value">${this.premiumizeKey ? 'Key configured' : 'Not configured'}</div>
                 </div>
+                <div class="settings-item">
+                    <label>OMDB API Key <span style="font-size:11px;color:#8b949e">(free at omdbapi.com - for MPAA ratings & Rotten Tomatoes)</span></label>
+                    <input type="text" id="omdbKeyInput" class="settings-input" placeholder="Enter OMDB API key" value="${localStorage.getItem('sv_omdb_key') || ''}">
+                    <button class="settings-save-btn" id="btnSaveOmdb">Save</button>
+                </div>
                 <button class="btn-logout" onclick="App.logout()">Logout</button>
             </div>
         `;
+
+        // OMDB key save handler
+        document.getElementById('btnSaveOmdb').addEventListener('click', () => {
+            const key = document.getElementById('omdbKeyInput').value.trim();
+            localStorage.setItem('sv_omdb_key', key);
+            document.getElementById('btnSaveOmdb').textContent = 'Saved!';
+            setTimeout(() => { document.getElementById('btnSaveOmdb').textContent = 'Save'; }, 1500);
+        });
     },
 
     logout() {
