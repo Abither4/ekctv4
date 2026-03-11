@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EKC TV V4</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <!-- Animated Plexus Background (always running) -->
+    <canvas id="plexusBg" class="animated-bg"></canvas>
+
+    <!-- Login Screen -->
+    <div id="loginScreen" class="screen active">
+        <div class="login-container">
+            <img src="img/ekc-logo.png" alt="EKC TV" class="logo-img-big">
+
+            <div class="login-form active">
+                <div class="input-group">
+                    <label>Username</label>
+                    <input type="text" id="loginUser" placeholder="Enter username">
+                </div>
+                <div class="input-group">
+                    <label>Password</label>
+                    <input type="password" id="loginPass" placeholder="Enter password">
+                </div>
+            </div>
+
+            <button id="btnConnect" class="btn-primary">Connect</button>
+            <div id="loginStatus" class="login-status"></div>
+            <div id="loginError" class="error-msg"></div>
+        </div>
+    </div>
+
+    <!-- Home Screen (after login) -->
+    <div id="homeScreen" class="screen">
+        <div class="home-content">
+            <img src="img/ekc-logo.png" alt="EKC TV" class="home-logo">
+
+            <div class="home-grid">
+                <button class="home-tile" data-page="guide">
+                    <div class="home-icon icon-guide"></div>
+                </button>
+                <button class="home-tile" data-page="vod">
+                    <div class="home-icon icon-movies"></div>
+                </button>
+                <button class="home-tile" data-page="series">
+                    <div class="home-icon icon-series"></div>
+                </button>
+                <button class="home-tile" data-page="stremio">
+                    <div class="home-icon icon-stremio"></div>
+                </button>
+                <button class="home-tile" data-page="favorites">
+                    <div class="home-icon icon-favorites"></div>
+                </button>
+                <button class="home-tile" data-page="settings">
+                    <div class="home-icon icon-settings"></div>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App Screen -->
+    <div id="mainScreen" class="screen">
+        <!-- Top Nav Bar -->
+        <nav class="top-nav">
+            <button class="top-nav-home" id="btnHome" title="Home">
+                <img src="img/ekc-logo.png" alt="EKC" class="top-nav-logo">
+            </button>
+            <div class="top-nav-tabs">
+                <button class="nav-btn active" data-page="guide">
+                    <span class="material-icons">menu_book</span>
+                    <span>Guide</span>
+                </button>
+                <button class="nav-btn" data-page="vod">
+                    <span class="material-icons">movie</span>
+                    <span>Movies</span>
+                </button>
+                <button class="nav-btn" data-page="series">
+                    <span class="material-icons">tv</span>
+                    <span>Series</span>
+                </button>
+                <button class="nav-btn" data-page="stremio">
+                    <span class="material-icons">play_circle</span>
+                    <span>Stremio</span>
+                </button>
+                <button class="nav-btn" data-page="favorites">
+                    <span class="material-icons">favorite</span>
+                    <span>Favorites</span>
+                </button>
+                <button class="nav-btn" data-page="settings">
+                    <span class="material-icons">settings</span>
+                    <span>Settings</span>
+                </button>
+            </div>
+            <div class="top-nav-right">
+                <div class="source-toggle">
+                    <button class="source-btn active" data-source="all">All</button>
+                    <button class="source-btn" data-source="marble">Marble</button>
+                    <button class="source-btn" data-source="pony">Premium</button>
+                </div>
+                <input type="text" id="searchInput" class="search-box" placeholder="Search...">
+                <button id="btnBack" class="icon-btn hidden" title="Back">
+                    <span class="material-icons">arrow_back</span>
+                </button>
+            </div>
+        </nav>
+
+        <!-- Content Area -->
+        <div class="content-area">
+            <!-- Categories Sidebar -->
+            <div id="categorySidebar" class="sidebar">
+                <div id="categoryList" class="category-list"></div>
+            </div>
+
+            <!-- Main Content -->
+            <div id="mainContent" class="main-content">
+                <div id="contentGrid" class="content-grid"></div>
+                <div id="contentSpinner" class="ekc-loader hidden"><img src="img/ekc-logo.png" class="ekc-spin"></div>
+                <div id="emptyState" class="empty-state hidden">
+                    <span class="material-icons">live_tv</span>
+                    <p>Select a category to browse</p>
+                </div>
+
+                <!-- EPG / TV Guide -->
+                <div id="epgPanel" class="epg-container hidden">
+                    <div class="epg-toolbar">
+                        <div class="epg-source-toggle">
+                            <button class="epg-src-btn active" data-epg-source="all">All</button>
+                            <button class="epg-src-btn" data-epg-source="marble">Marble</button>
+                            <button class="epg-src-btn" data-epg-source="pony">Premium</button>
+                        </div>
+                        <div style="flex:1"></div>
+                        <button id="btnEpgPrev" title="Previous"><span class="material-icons" style="font-size:18px">chevron_left</span></button>
+                        <span class="epg-date" id="epgDate">Today</span>
+                        <button id="btnEpgNext" title="Next"><span class="material-icons" style="font-size:18px">chevron_right</span></button>
+                        <button id="btnEpgNow" class="epg-now-btn">Now</button>
+                    </div>
+                    <div class="epg-cat-bar" id="epgCatBar" style="display:none"></div>
+                    <div id="epgNowBar" class="epg-now-bar hidden">
+                        <span class="material-icons" style="font-size:16px;color:#00D4FF">play_circle</span>
+                        <span id="epgNowBarText">Now Playing</span>
+                    </div>
+                    <div class="epg-grid-wrapper" id="epgScrollArea">
+                        <div class="epg-table">
+                            <div class="epg-corner">Channels</div>
+                            <div class="epg-timeline-header" id="epgTimeline"></div>
+                            <div class="epg-channel-col" id="epgChannelList"></div>
+                            <div class="epg-programs-area" id="epgPrograms">
+                                <div class="epg-now-line" id="epgNowLine"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Player Overlay -->
+        <div id="playerOverlay" class="player-overlay hidden">
+            <div class="player-header">
+                <button id="btnClosePlayer" class="icon-btn">
+                    <span class="material-icons">close</span>
+                </button>
+                <span id="playerTitle">Now Playing</span>
+                <span id="playerSource" class="player-source-badge"></span>
+            </div>
+            <div class="player-wrapper">
+                <video id="videoPlayer" controls autoplay></video>
+                <div id="playerSpinner" class="ekc-loader hidden"><img src="img/ekc-logo.png" class="ekc-spin"></div>
+                <div id="playerError" class="player-error hidden"></div>
+            </div>
+            <div class="player-controls-extra">
+                <button id="btnFavorite" class="icon-btn" title="Add to Favorites">
+                    <span class="material-icons">favorite_border</span>
+                </button>
+                <button id="btnFullscreen" class="icon-btn" title="Fullscreen">
+                    <span class="material-icons">fullscreen</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Stremio Panel -->
+        <div id="stremioPanel" class="stremio-panel hidden">
+            <div class="stremio-topbar">
+                <div class="stremio-logo">
+                    <span class="material-icons" style="color:#8B5CF6">play_circle</span>
+                    <span>Stremio</span>
+                </div>
+                <div class="stremio-tabs">
+                    <button class="stremio-tab active" data-stab="board">Board</button>
+                    <button class="stremio-tab" data-stab="discover">Discover</button>
+                    <button class="stremio-tab" data-stab="search">Search</button>
+                </div>
+                <div class="stremio-topbar-right">
+                    <input type="text" id="stremioSearch" class="stremio-search-input" placeholder="Search movies, series..." style="display:none">
+                </div>
+            </div>
+            <div class="stremio-content" id="stremioContent"></div>
+            <div class="stremio-detail hidden" id="stremioDetail">
+                <div class="stremio-detail-bg" id="stremioDetailBg"></div>
+                <button class="stremio-detail-close" id="btnStremioDetailClose"><span class="material-icons">arrow_back</span></button>
+                <div class="stremio-detail-body" id="stremioDetailBody"></div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+    // Global error handler - shows crash info on screen
+    window.onerror = function(msg, src, line, col, err) {
+        console.error('[CRASH]', msg, src, line, col);
+        var d = document.createElement('div');
+        d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#300;color:#f88;padding:16px;font-family:monospace;font-size:13px;white-space:pre-wrap;';
+        d.textContent = 'JS Error: ' + msg + '\nFile: ' + src + '\nLine: ' + line + ':' + col + '\n' + (err && err.stack || '');
+        document.body.appendChild(d);
+    };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="js/app.js"></script>
+    <script>
+    // Blue Plexus Background Animation
+    (function() {
+        const canvas = document.getElementById('plexusBg');
+        const ctx = canvas.getContext('2d');
+        let w, h, particles = [];
+        const PARTICLE_COUNT = 80;
+        const MAX_DIST = 160;
+
+        function resize() {
+            w = canvas.width = window.innerWidth;
+            h = canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            particles.push({
+                x: Math.random() * w,
+                y: Math.random() * h,
+                vx: (Math.random() - 0.5) * 0.6,
+                vy: (Math.random() - 0.5) * 0.6,
+                r: Math.random() * 2 + 1
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, w, h);
+
+            // Draw connections
+            for (let i = 0; i < particles.length; i++) {
+                for (let j = i + 1; j < particles.length; j++) {
+                    const dx = particles[i].x - particles[j].x;
+                    const dy = particles[i].y - particles[j].y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < MAX_DIST) {
+                        const alpha = (1 - dist / MAX_DIST) * 0.35;
+                        ctx.beginPath();
+                        ctx.strokeStyle = `rgba(0, 180, 255, ${alpha})`;
+                        ctx.lineWidth = 0.8;
+                        ctx.moveTo(particles[i].x, particles[i].y);
+                        ctx.lineTo(particles[j].x, particles[j].y);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            // Draw particles
+            for (const p of particles) {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0, 212, 255, 0.6)';
+                ctx.fill();
+
+                // Glow
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.r + 3, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0, 180, 255, 0.08)';
+                ctx.fill();
+
+                // Move
+                p.x += p.vx;
+                p.y += p.vy;
+
+                // Wrap
+                if (p.x < -10) p.x = w + 10;
+                if (p.x > w + 10) p.x = -10;
+                if (p.y < -10) p.y = h + 10;
+                if (p.y > h + 10) p.y = -10;
+            }
+
+            requestAnimationFrame(draw);
+        }
+        draw();
+    })();
+    </script>
+</body>
+</html>
