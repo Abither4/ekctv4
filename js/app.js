@@ -2,6 +2,18 @@
 // Dual DNS: Marble (pradahype.com) + Premium (pinkponyclub.online)
 // + Stremio Panel
 
+// CORS proxy for browser requests — set this to your Cloudflare Worker URL
+const CORS_PROXY = localStorage.getItem('sv_cors_proxy') || 'https://ekctv-proxy.YOURACCOUNT.workers.dev';
+
+function proxyUrl(url) {
+    if (!url || !CORS_PROXY) return url;
+    // Don't proxy relative URLs, data URIs, or blob URLs
+    if (!url.startsWith('http')) return url;
+    // Don't double-proxy
+    if (url.includes(CORS_PROXY.replace('https://', '').replace('http://', ''))) return url;
+    return `${CORS_PROXY}/?url=${encodeURIComponent(url)}`;
+}
+
 const DNS = {
     marble: { name: 'Marble', url: 'https://pradahype.com', color: 'marble' },
     pony:   { name: 'Premium', url: 'https://pinkponyclub.online', color: 'pony' }
@@ -2080,7 +2092,7 @@ const App = {
         if (isDirectVideo) {
             // Direct video file — just set src, no HLS needed
             console.log('[Player] Direct video playback');
-            video.src = url;
+            video.src = proxyUrl(url);
             video.play().catch(e => {
                 console.error('[Player] Direct play failed:', e);
                 this.hideLoader();
@@ -2101,11 +2113,16 @@ const App = {
                 lowLatencyMode: true,
                 maxBufferLength: 30,
                 maxMaxBufferLength: 60,
-                xhrSetup: (xhr) => {
+                xhrSetup: (xhr, xhrUrl) => {
                     xhr.withCredentials = false;
+                    // Proxy all HLS segment/manifest requests through CORS proxy
+                    const proxied = proxyUrl(xhrUrl);
+                    if (proxied !== xhrUrl) {
+                        xhr.open('GET', proxied, true);
+                    }
                 }
             });
-            this.hls.loadSource(url);
+            this.hls.loadSource(proxyUrl(url));
             this.hls.attachMedia(video);
             this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 console.log('[Player] Manifest parsed, playing');
@@ -2144,11 +2161,11 @@ const App = {
                 }
             });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = url;
+            video.src = proxyUrl(url);
             video.play().catch(() => {});
         } else {
             // Fallback: try direct play
-            video.src = url;
+            video.src = proxyUrl(url);
             video.play().catch(() => {
                 this.hideLoader();
                 errorEl.textContent = 'Unable to play this stream format.';
@@ -3506,12 +3523,13 @@ const App = {
         }
     },
 
-    // Helper: fetch with timeout (compatible with all browsers)
+    // Helper: fetch with timeout + CORS proxy (compatible with all browsers)
     async fetchWithTimeout(url, timeoutMs) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-            const resp = await fetch(url, { signal: controller.signal });
+            const proxied = proxyUrl(url);
+            const resp = await fetch(proxied, { signal: controller.signal });
             clearTimeout(timer);
             return resp;
         } catch(e) {
@@ -4001,6 +4019,11 @@ const App = {
                     <div class="value">${this.premiumizeKey ? 'Key configured' : 'Not configured'}</div>
                 </div>
                 <div class="settings-item">
+                    <label>CORS Proxy URL <span style="font-size:11px;color:#8b949e">(Cloudflare Worker URL — required for web app)</span></label>
+                    <input type="text" id="corsProxyInput" class="settings-input" placeholder="https://ekctv-proxy.YOURACCOUNT.workers.dev" value="${localStorage.getItem('sv_cors_proxy') || CORS_PROXY}">
+                    <button class="settings-save-btn" id="btnSaveCorsProxy">Save</button>
+                </div>
+                <div class="settings-item">
                     <label>OMDB API Key <span style="font-size:11px;color:#8b949e">(free at omdbapi.com - for MPAA ratings & Rotten Tomatoes)</span></label>
                     <input type="text" id="omdbKeyInput" class="settings-input" placeholder="Enter OMDB API key" value="${localStorage.getItem('sv_omdb_key') || ''}">
                     <button class="settings-save-btn" id="btnSaveOmdb">Save</button>
@@ -4008,6 +4031,14 @@ const App = {
                 <button class="btn-logout" onclick="App.logout()">Logout</button>
             </div>
         `;
+
+        // CORS proxy save handler
+        document.getElementById('btnSaveCorsProxy').addEventListener('click', () => {
+            const val = document.getElementById('corsProxyInput').value.trim().replace(/\/+$/, '');
+            localStorage.setItem('sv_cors_proxy', val);
+            document.getElementById('btnSaveCorsProxy').textContent = 'Saved! Reload to apply.';
+            setTimeout(() => { document.getElementById('btnSaveCorsProxy').textContent = 'Save'; }, 2500);
+        });
 
         // OMDB key save handler
         document.getElementById('btnSaveOmdb').addEventListener('click', () => {
