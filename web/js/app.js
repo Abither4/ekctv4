@@ -11,10 +11,11 @@ const App = {
     session: null,
     servers: {},       // { marble: { connected, userInfo, serverInfo }, pony: { ... } }
     currentPage: 'live',
-    currentSource: 'all',  // 'all', 'marble', 'pony'
+    currentSource: 'marble',  // 'marble', 'pony'
     categories: [],
     streams: [],
     favorites: JSON.parse(localStorage.getItem('sv_favorites') || '[]'),
+    recentlyViewed: JSON.parse(localStorage.getItem('sv_recently_viewed') || '[]'),
     stremioAddons: [],
     premiumizeKey: localStorage.getItem('sv_premiumize') || 'esx99bfad8pr88bk',
 
@@ -65,7 +66,7 @@ const App = {
     epgData: {},
     epgDateOffset: 0,
     epgStartHour: 0,
-    epgSource: 'all',
+    epgSource: 'marble',
     epgCategory: 'all',
     EPG_HOURS: 24,
     PX_PER_MIN: 3.33, // pixels per minute (200px per 60min)
@@ -146,12 +147,16 @@ const App = {
             });
         });
 
-        // Source toggle
+        // Source toggle (sidebar)
         document.querySelectorAll('.source-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 this.currentSource = btn.dataset.source;
+                // Sync EPG source buttons too
+                document.querySelectorAll('.epg-src-btn').forEach(b => b.classList.remove('active'));
+                const epgBtn = document.querySelector(`.epg-src-btn[data-epg-source="${btn.dataset.source}"]`);
+                if (epgBtn) epgBtn.classList.add('active');
                 this.filterBySource();
             });
         });
@@ -212,8 +217,14 @@ const App = {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.epg-src-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
+                this.currentSource = btn.dataset.epgSource;
                 this.epgSource = btn.dataset.epgSource;
-                this.renderEpgFiltered();
+                // Sync sidebar source buttons
+                document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
+                const sidebarBtn = document.querySelector(`.source-btn[data-source="${btn.dataset.epgSource}"]`);
+                if (sidebarBtn) sidebarBtn.classList.add('active');
+                this.loadCategories('live');
+                this.loadEpg();
             });
         });
 
@@ -375,7 +386,7 @@ const App = {
     _handleHomeKeys(e) {
         const tiles = [...document.querySelectorAll('.home-tile')];
         if (!tiles.length) return;
-        const cols = this._getGridCols(tiles[0]);
+        const cols = 3;
 
         switch(e.key) {
             case 'ArrowRight':
@@ -423,15 +434,45 @@ const App = {
         }
 
         // Guide page has its own 2D navigation
-        if (this.currentPage === 'guide' && this._focusZone !== 'nav') {
-            this._handleGuideKeys(e);
-            return;
+        if (this.currentPage === 'guide') {
+            if (this._focusZone === 'nav' && (key === 'ArrowDown' || key === 'Enter')) {
+                e.preventDefault();
+                if (key === 'ArrowDown') {
+                    this._focusZone = 'epg-toolbar';
+                    this._epgToolbarIdx = 0;
+                    this._focusEpgToolbar();
+                } else {
+                    const navBtns = [...document.querySelectorAll('.nav-btn')];
+                    if (navBtns[this._navIdx]) navBtns[this._navIdx].click();
+                }
+                return;
+            }
+            if (this._focusZone !== 'nav') {
+                this._handleGuideKeys(e);
+                return;
+            }
         }
 
         // Stremio page
-        if (this.currentPage === 'stremio' && this._focusZone !== 'nav') {
-            this._handleStremioKeys(e);
-            return;
+        if (this.currentPage === 'stremio') {
+            if (this._focusZone === 'nav' && (key === 'ArrowDown' || key === 'Enter')) {
+                e.preventDefault();
+                if (key === 'ArrowDown') {
+                    this._focusZone = 'content';
+                    this._stremioFocusZone = 'tabs';
+                    this._clearFocus();
+                    const tabs = [...document.querySelectorAll('.stremio-tab')];
+                    if (tabs[this._stremioTabIdx]) tabs[this._stremioTabIdx].classList.add('remote-focus');
+                } else {
+                    const navBtns = [...document.querySelectorAll('.nav-btn')];
+                    if (navBtns[this._navIdx]) navBtns[this._navIdx].click();
+                }
+                return;
+            }
+            if (this._focusZone !== 'nav') {
+                this._handleStremioKeys(e);
+                return;
+            }
         }
 
         // Standard pages: nav, sidebar, content
@@ -698,15 +739,77 @@ const App = {
     _stremioRow: 0,   // which row (Board) or grid-row (Discover)
     _stremioCol: 0,   // which card within that row
     _stremioIdx: 0,   // flat index for Discover grid
+    _stremioFocusZone: 'tabs', // 'tabs' or 'content'
+    _stremioTabIdx: 0,
 
     _handleStremioKeys(e) {
         const key = e.key;
-        const isDiscover = !!document.getElementById('stremioDiscoverGrid');
+
+        // Tab bar navigation
+        if (this._stremioFocusZone === 'tabs') {
+            const tabs = [...document.querySelectorAll('.stremio-tab')];
+            switch(key) {
+                case 'ArrowRight':
+                    e.preventDefault();
+                    this._stremioTabIdx = Math.min(tabs.length - 1, this._stremioTabIdx + 1);
+                    this._clearFocus();
+                    if (tabs[this._stremioTabIdx]) tabs[this._stremioTabIdx].classList.add('remote-focus');
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    this._stremioTabIdx = Math.max(0, this._stremioTabIdx - 1);
+                    this._clearFocus();
+                    if (tabs[this._stremioTabIdx]) tabs[this._stremioTabIdx].classList.add('remote-focus');
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    this._stremioFocusZone = 'content';
+                    this._focusZone = 'nav';
+                    this._clearFocus();
+                    this._focusNav();
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    this._stremioFocusZone = 'content';
+                    this._stremioRow = 0;
+                    this._stremioCol = 0;
+                    this._stremioIdx = 0;
+                    this._clearFocus();
+                    // Focus first content item
+                    this._focusFirstStremioContent();
+                    break;
+                case 'Enter':
+                    e.preventDefault();
+                    if (tabs[this._stremioTabIdx]) tabs[this._stremioTabIdx].click();
+                    break;
+                case 'Escape': case 'Backspace': case 'GoBack':
+                    e.preventDefault();
+                    this.showHome();
+                    break;
+            }
+            return;
+        }
+
+        // Content navigation — go back to tabs on ArrowUp from top
+        const isDiscover = !!document.getElementById('stremioDiscoverGrid') || !!document.getElementById('stremioSearchGrid');
 
         if (isDiscover) {
             this._handleStremioGridKeys(e);
         } else {
             this._handleStremioBoardKeys(e);
+        }
+    },
+
+    _focusFirstStremioContent() {
+        const card = document.querySelector('.stremio-poster-card');
+        if (card) {
+            card.classList.add('remote-focus');
+            card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+        // Also try filter buttons on discover page
+        const filterBtn = document.querySelector('.stremio-filter-btn');
+        if (!card && filterBtn) {
+            filterBtn.classList.add('remote-focus');
         }
     },
 
@@ -758,8 +861,11 @@ const App = {
                     if (this._stremioCol >= newCards.length) this._stremioCol = Math.max(0, newCards.length - 1);
                     this._focusStremioCard(rows, newCards);
                 } else {
-                    this._focusZone = 'nav';
-                    this._focusNav();
+                    // Go back to Stremio tabs
+                    this._stremioFocusZone = 'tabs';
+                    this._clearFocus();
+                    const tabs = [...document.querySelectorAll('.stremio-tab')];
+                    if (tabs[this._stremioTabIdx]) tabs[this._stremioTabIdx].classList.add('remote-focus');
                 }
                 break;
             case 'Enter':
@@ -793,11 +899,19 @@ const App = {
         }
     },
 
-    // Discover view: CSS grid of all cards
+    // Discover/Search view: CSS grid of all cards
     _handleStremioGridKeys(e) {
         const key = e.key;
-        const cards = [...document.querySelectorAll('#stremioDiscoverGrid .stremio-poster-card')];
+        const cards = [...document.querySelectorAll('#stremioDiscoverGrid .stremio-poster-card, #stremioSearchGrid .stremio-poster-card')];
         if (!cards.length) {
+            // Still allow tab navigation and back
+            if (key === 'ArrowUp') {
+                e.preventDefault();
+                this._stremioFocusZone = 'tabs';
+                this._clearFocus();
+                const tabs = [...document.querySelectorAll('.stremio-tab')];
+                if (tabs[this._stremioTabIdx]) tabs[this._stremioTabIdx].classList.add('remote-focus');
+            }
             if (key === 'Escape' || key === 'Backspace' || key === 'GoBack') { e.preventDefault(); this.showHome(); }
             return;
         }
@@ -831,8 +945,11 @@ const App = {
                     this._stremioIdx = prev;
                     this._focusElement(cards, this._stremioIdx);
                 } else {
-                    this._focusZone = 'nav';
-                    this._focusNav();
+                    // Go back to Stremio tabs
+                    this._stremioFocusZone = 'tabs';
+                    this._clearFocus();
+                    const tabs = [...document.querySelectorAll('.stremio-tab')];
+                    if (tabs[this._stremioTabIdx]) tabs[this._stremioTabIdx].classList.add('remote-focus');
                 }
                 break;
             }
@@ -991,6 +1108,7 @@ const App = {
             statusEl.innerHTML = `
                 <div class="status-line"><span class="status-dot connecting"></span> Marble (pradahype.com)...</div>
                 <div class="status-line"><span class="status-dot connecting"></span> Premium (pinkponyclub.online)...</div>
+                <div class="status-line"><span class="status-dot connecting"></span> Stremio...</div>
             `;
 
             const results = {};
@@ -1024,6 +1142,13 @@ const App = {
                 const err = ponyResult.value?.error || ponyResult.reason?.message || 'Unknown error';
                 dots[1].parentElement.innerHTML = `<span class="status-dot failed"></span> Premium - Failed (${err})`;
                 console.error('[Login] Premium failed:', ponyResult);
+            }
+
+            // Stremio always connects (uses public addons)
+            const dots2 = statusEl.querySelectorAll('.status-dot');
+            if (dots2[2]) {
+                dots2[2].className = 'status-dot success';
+                dots2[2].parentElement.innerHTML = '<span class="status-dot success"></span> Stremio - Connected';
             }
 
             btn.disabled = false;
@@ -1230,11 +1355,11 @@ const App = {
 
     getActiveServers() {
         const keys = [];
-        if (this.currentSource === 'all' || this.currentSource === 'marble') {
-            if (this.servers.marble?.success) keys.push('marble');
+        if (this.currentSource === 'marble' && this.servers.marble?.success) {
+            keys.push('marble');
         }
-        if (this.currentSource === 'all' || this.currentSource === 'pony') {
-            if (this.servers.pony?.success) keys.push('pony');
+        if (this.currentSource === 'pony' && this.servers.pony?.success) {
+            keys.push('pony');
         }
         return keys;
     },
@@ -1270,10 +1395,34 @@ const App = {
                 }
             });
 
-            // Sort: "Full HD USA" first (Marble priority), then all USA categories, then rest alphabetical
+            // Priority categories for Premium (pony) — show at top
+            const premiumPriority = [
+                'usa entertainment', 'ppv events', 'usa news',
+                'usa nfl', 'usa nba', 'usa mlb', 'usa nhl'
+            ];
+
+            // Sort categories
             this.categories = [...allCats.values()].sort((a, b) => {
                 const aName = (a.category_name || '').toLowerCase();
                 const bName = (b.category_name || '').toLowerCase();
+
+                // Premium priority categories at top
+                if (this.currentSource === 'pony') {
+                    const aIdx = premiumPriority.findIndex(p => aName.includes(p));
+                    const bIdx = premiumPriority.findIndex(p => bName.includes(p));
+                    if (aIdx !== -1 && bIdx === -1) return -1;
+                    if (bIdx !== -1 && aIdx === -1) return 1;
+                    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+                }
+
+                // For VOD: "New Releases" from Marble server always first
+                if (type === 'vod') {
+                    const aNewRelease = aName.includes('new release') && (a.sources || []).includes('marble');
+                    const bNewRelease = bName.includes('new release') && (b.sources || []).includes('marble');
+                    if (aNewRelease && !bNewRelease) return -1;
+                    if (bNewRelease && !aNewRelease) return 1;
+                }
+
                 const aFullHdUsa = aName.includes('full hd') && aName.includes('usa');
                 const bFullHdUsa = bName.includes('full hd') && bName.includes('usa');
                 const aUsa = aName.includes('usa') || aName.includes('us ') || aName.includes('united states');
@@ -1296,20 +1445,50 @@ const App = {
                 return;
             }
 
-            const allEl = document.createElement('div');
-            allEl.className = 'category-item active';
-            allEl.innerHTML = '<span class="material-icons">folder</span> All';
-            allEl.addEventListener('click', () => {
+            // Favorites category
+            const favEl = document.createElement('div');
+            favEl.className = 'category-item';
+            const favSection = type === 'live' ? 'live' : type;
+            const favCount = this.favorites.filter(f => f.section === favSection).length;
+            favEl.innerHTML = `<span class="material-icons" style="color:#00D4FF">favorite</span> Favorites${favCount ? ` (${favCount})` : ''}`;
+            favEl.addEventListener('click', () => {
                 document.querySelectorAll('.category-item').forEach(c => c.classList.remove('active'));
-                allEl.classList.add('active');
-                if (this.currentPage === 'guide') {
-                    this.epgCategory = 'all';
-                    this.renderEpgFiltered();
-                } else {
-                    this.loadStreams(type, null);
-                }
+                favEl.classList.add('active');
+                document.getElementById('emptyState').classList.add('hidden');
+                this.renderSectionFavorites(favSection, type);
             });
-            categoryList.appendChild(allEl);
+            categoryList.appendChild(favEl);
+
+            // Recently Viewed category
+            const recentEl = document.createElement('div');
+            recentEl.className = 'category-item';
+            const recentCount = this.recentlyViewed.filter(r => r.section === favSection).length;
+            recentEl.innerHTML = `<span class="material-icons" style="color:#00D4FF">history</span> Recently Viewed${recentCount ? ` (${recentCount})` : ''}`;
+            recentEl.addEventListener('click', () => {
+                document.querySelectorAll('.category-item').forEach(c => c.classList.remove('active'));
+                recentEl.classList.add('active');
+                document.getElementById('emptyState').classList.add('hidden');
+                this.renderSectionRecent(favSection, type);
+            });
+            categoryList.appendChild(recentEl);
+
+            // Separator
+            const sep = document.createElement('div');
+            sep.style.cssText = 'height:1px;background:#222;margin:6px 10px;';
+            categoryList.appendChild(sep);
+
+            // Add "All" category (except for Guide)
+            if (this.currentPage !== 'guide') {
+                const allEl = document.createElement('div');
+                allEl.className = 'category-item active';
+                allEl.innerHTML = '<span class="material-icons">folder</span> All';
+                allEl.addEventListener('click', () => {
+                    document.querySelectorAll('.category-item').forEach(c => c.classList.remove('active'));
+                    allEl.classList.add('active');
+                    this.loadStreams(type, null);
+                });
+                categoryList.appendChild(allEl);
+            }
 
             this.categories.forEach(cat => {
                 const el = document.createElement('div');
@@ -1410,8 +1589,11 @@ const App = {
         card.addEventListener('click', () => {
             const baseUrl = DNS[item._source].url;
             const url = `${baseUrl}/live/${encodeURIComponent(this.session.username)}/${encodeURIComponent(this.session.token)}/${item.stream_id}.m3u8`;
+            this.trackRecentlyViewed({ id: String(item.stream_id), name: item.name, url, icon: item.stream_icon, type: 'live', section: 'live', source: item._source });
             this.openPlayer(url, item.name, { id: String(item.stream_id), type: 'live', icon: item.stream_icon, source: item._source });
         });
+        this.addLongPress(card, { id: String(item.stream_id), name: item.name, icon: item.stream_icon, type: 'live', section: 'live', source: item._source,
+            url: `${DNS[item._source].url}/live/${encodeURIComponent(this.session.username)}/${encodeURIComponent(this.session.token)}/${item.stream_id}.m3u8` });
         grid.appendChild(card);
     },
 
@@ -1432,17 +1614,15 @@ const App = {
                 <div class="card-meta">${item.rating || ''}</div>
             </div>
         `;
+        const section = type === 'vod' ? 'vod' : 'series';
+        const favItem = { id: String(item.stream_id || item.series_id), name, icon, poster: icon, type: section, section, source: item._source };
+
         card.addEventListener('click', () => {
             if (type === 'vod') {
-                this.openMediaDetail({
-                    name,
-                    poster: icon,
-                    background: icon,
-                    type: 'movie',
-                    year: item.year || '',
-                    genres: item.genre || '',
-                    description: item.plot || '',
-                    imdbRating: item.rating || '',
+                const meta = {
+                    name, poster: icon, background: icon, type: 'movie',
+                    year: item.year || '', genres: item.genre || '',
+                    description: item.plot || '', imdbRating: item.rating || '',
                     source: item._source,
                     playAction: () => {
                         const ext = item.container_extension || 'mp4';
@@ -1450,24 +1630,24 @@ const App = {
                         const url = `${baseUrl}/movie/${encodeURIComponent(this.session.username)}/${encodeURIComponent(this.session.token)}/${item.stream_id}.${ext}`;
                         this.openPlayer(url, name, { id: String(item.stream_id), type: 'vod', icon, source: item._source });
                     }
-                });
+                };
+                this.trackRecentlyViewed({ ...favItem, meta });
+                this.openMediaDetail(meta);
             } else {
-                this.openMediaDetail({
-                    name,
-                    poster: icon,
-                    background: icon,
-                    type: 'series',
-                    year: item.year || '',
-                    genres: item.genre || '',
-                    description: item.plot || '',
-                    imdbRating: item.rating || '',
+                const meta = {
+                    name, poster: icon, background: icon, type: 'series',
+                    year: item.year || '', genres: item.genre || '',
+                    description: item.plot || '', imdbRating: item.rating || '',
                     source: item._source,
                     seriesAction: () => {
                         this.loadSeriesDetail(item.series_id, name, item._source);
                     }
-                });
+                };
+                this.trackRecentlyViewed({ ...favItem, meta });
+                this.openMediaDetail(meta);
             }
         });
+        this.addLongPress(card, favItem);
         grid.appendChild(card);
     },
 
@@ -1611,6 +1791,13 @@ const App = {
     },
 
     // === Trailer System ===
+    // Piped embed instances for trailer playback (serves direct video, works on TV)
+    _pipedEmbedInstances: [
+        'https://piped.video',
+        'https://piped.private.coffee',
+        'https://piped.kavin.rocks'
+    ],
+
     async openTrailer(name, year, type, imdbId) {
         const overlay = document.getElementById('trailerOverlay');
         const titleEl = document.getElementById('trailerTitle');
@@ -1626,7 +1813,22 @@ const App = {
         try {
             const videoId = await this._findTrailerVideoId(name, year, type, imdbId);
             if (videoId) {
-                player.innerHTML = `<iframe src="https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0" allowfullscreen allow="autoplay; encrypted-media"></iframe>`;
+                // Use Piped embed - plays video directly, no YouTube restrictions
+                const iframe = document.createElement('iframe');
+                iframe.allowFullscreen = true;
+                iframe.allow = 'autoplay; encrypted-media; fullscreen';
+                iframe.src = `${this._pipedEmbedInstances[0]}/embed/${videoId}?autoplay=1`;
+                let attempt = 0;
+                iframe.onerror = () => {
+                    attempt++;
+                    if (attempt < this._pipedEmbedInstances.length) {
+                        iframe.src = `${this._pipedEmbedInstances[attempt]}/embed/${videoId}?autoplay=1`;
+                    } else {
+                        errorEl.textContent = 'Trailer could not be played.';
+                        errorEl.classList.remove('hidden');
+                    }
+                };
+                player.appendChild(iframe);
             } else {
                 errorEl.textContent = 'No trailer found for this title.';
                 errorEl.classList.remove('hidden');
@@ -1688,16 +1890,15 @@ const App = {
 
         // Strategy 3: Fallback to Piped API search
         const query = `${name} ${year || ''} official trailer`.trim();
-        const pipedInstances = [
+        const pipedApis = [
             'https://api.piped.private.coffee',
-            'https://pipedapi.kavin.rocks',
-            'https://pipedapi.orangenet.cc'
+            'https://pipedapi.kavin.rocks'
         ];
-        for (const base of pipedInstances) {
+        for (const base of pipedApis) {
             try {
                 const url = `${base}/search?q=${encodeURIComponent(query)}&filter=videos`;
-                console.log(`[Trailer] Trying Piped: ${base}`);
-                const resp = await this.fetchWithTimeout(url, 6000);
+                console.log(`[Trailer] Trying Piped search: ${base}`);
+                const resp = await this.fetchWithTimeout(url, 8000);
                 const data = await resp.json();
                 const items = data.items || data;
                 if (Array.isArray(items) && items.length > 0) {
@@ -2011,6 +2212,232 @@ const App = {
         });
     },
 
+    // === Long-press to add favorites ===
+    _longPressTimer: null,
+    _longPressTriggered: false,
+
+    addLongPress(el, item) {
+        let timer = null;
+        let triggered = false;
+
+        const start = (e) => {
+            triggered = false;
+            timer = setTimeout(() => {
+                triggered = true;
+                e.preventDefault();
+                e.stopPropagation();
+                this.showFavoritePrompt(item);
+            }, 600);
+        };
+
+        const cancel = () => {
+            clearTimeout(timer);
+        };
+
+        const click = (e) => {
+            if (triggered) {
+                e.preventDefault();
+                e.stopPropagation();
+                triggered = false;
+            }
+        };
+
+        el.addEventListener('mousedown', start);
+        el.addEventListener('touchstart', start, { passive: false });
+        el.addEventListener('mouseup', cancel);
+        el.addEventListener('touchend', cancel);
+        el.addEventListener('mouseleave', cancel);
+        el.addEventListener('touchcancel', cancel);
+        el.addEventListener('click', click, true);
+    },
+
+    showFavoritePrompt(item) {
+        // Remove existing prompt
+        document.getElementById('favPrompt')?.remove();
+
+        const isFav = this.favorites.some(f => f.id === item.id && f.section === item.section);
+        const actionText = isFav ? 'Remove from Favorites?' : 'Add to Favorites?';
+        const actionIcon = isFav ? 'heart_broken' : 'favorite';
+
+        const overlay = document.createElement('div');
+        overlay.id = 'favPrompt';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+        overlay.innerHTML = `
+            <div style="background:#1a1a2e;border:1px solid #333;border-radius:16px;padding:24px 32px;text-align:center;max-width:320px;">
+                <span class="material-icons" style="font-size:48px;color:#00D4FF;margin-bottom:12px">${actionIcon}</span>
+                <h3 style="margin:0 0 4px;font-size:16px;color:#fff">${actionText}</h3>
+                <p style="margin:0 0 20px;font-size:13px;color:#888;word-break:break-word">${item.name}</p>
+                <div style="display:flex;gap:12px;justify-content:center">
+                    <button id="favPromptYes" style="padding:10px 28px;background:#00D4FF;color:#000;border:none;border-radius:10px;font-weight:600;cursor:pointer;font-size:14px">Yes</button>
+                    <button id="favPromptNo" style="padding:10px 28px;background:#333;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:14px">Cancel</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) overlay.remove();
+        });
+
+        document.getElementById('favPromptNo').addEventListener('click', () => overlay.remove());
+        document.getElementById('favPromptYes').addEventListener('click', () => {
+            if (isFav) {
+                this.favorites = this.favorites.filter(f => !(f.id === item.id && f.section === item.section));
+            } else {
+                this.favorites.push({
+                    id: item.id,
+                    name: item.name,
+                    url: item.url || null,
+                    icon: item.icon || null,
+                    poster: item.poster || null,
+                    type: item.type || 'live',
+                    section: item.section || 'live',  // live, vod, series, stremio
+                    source: item.source || null,
+                    meta: item.meta || null,
+                    addedAt: Date.now()
+                });
+            }
+            localStorage.setItem('sv_favorites', JSON.stringify(this.favorites));
+            overlay.remove();
+        });
+    },
+
+    // === Recently Viewed ===
+    trackRecentlyViewed(item) {
+        // Remove if already exists
+        this.recentlyViewed = this.recentlyViewed.filter(r => !(r.id === item.id && r.section === item.section));
+        // Add to front
+        this.recentlyViewed.unshift({
+            id: item.id,
+            name: item.name,
+            url: item.url || null,
+            icon: item.icon || null,
+            poster: item.poster || null,
+            type: item.type || 'live',
+            section: item.section || 'live',
+            source: item.source || null,
+            meta: item.meta || null,
+            viewedAt: Date.now()
+        });
+        // Keep max 50
+        if (this.recentlyViewed.length > 50) this.recentlyViewed = this.recentlyViewed.slice(0, 50);
+        localStorage.setItem('sv_recently_viewed', JSON.stringify(this.recentlyViewed));
+    },
+
+    renderSectionFavorites(section, type) {
+        const grid = document.getElementById('contentGrid');
+        grid.innerHTML = '';
+        const favs = this.favorites.filter(f => f.section === section);
+
+        if (favs.length === 0) {
+            grid.innerHTML = '<div class="empty-state"><span class="material-icons">favorite_border</span><p>No favorites in this section</p></div>';
+            return;
+        }
+
+        if (type === 'live') {
+            grid.className = 'content-grid list-view';
+            favs.forEach(fav => {
+                const card = document.createElement('div');
+                card.className = 'stream-card live-item';
+                card.innerHTML = `
+                    <div class="live-icon">
+                        ${fav.icon ? `<img src="${fav.icon}" onerror="this.parentElement.innerHTML='<span class=\\'material-icons\\'>star</span>'">` : '<span class="material-icons">star</span>'}
+                    </div>
+                    <div class="card-info">
+                        <div class="card-title">${fav.name}</div>
+                        <div class="card-meta">Favorite</div>
+                    </div>
+                `;
+                card.addEventListener('click', () => {
+                    if (fav.url) this.openPlayer(fav.url, fav.name, { id: fav.id, type: fav.type, icon: fav.icon, source: fav.source });
+                });
+                this.addLongPress(card, fav);
+                grid.appendChild(card);
+            });
+        } else {
+            grid.className = 'content-grid';
+            favs.forEach(fav => {
+                const img = fav.poster || fav.icon || '';
+                const card = document.createElement('div');
+                card.className = 'stream-card';
+                card.innerHTML = `
+                    <div class="poster">
+                        ${img ? `<img src="${img}" onerror="this.parentElement.innerHTML='<span class=\\'material-icons placeholder-icon\\'>movie</span>'">` : '<span class="material-icons placeholder-icon">movie</span>'}
+                    </div>
+                    <div class="card-info">
+                        <div class="card-title">${fav.name}</div>
+                    </div>
+                `;
+                card.addEventListener('click', () => {
+                    if (fav.meta) {
+                        this.openMediaDetail(fav.meta);
+                    } else if (fav.url) {
+                        this.openPlayer(fav.url, fav.name, { id: fav.id, type: fav.type, icon: fav.icon, source: fav.source });
+                    }
+                });
+                this.addLongPress(card, fav);
+                grid.appendChild(card);
+            });
+        }
+    },
+
+    renderSectionRecent(section, type) {
+        const grid = document.getElementById('contentGrid');
+        grid.innerHTML = '';
+        const recents = this.recentlyViewed.filter(r => r.section === section);
+
+        if (recents.length === 0) {
+            grid.innerHTML = '<div class="empty-state"><span class="material-icons">history</span><p>No recently viewed items</p></div>';
+            return;
+        }
+
+        if (type === 'live') {
+            grid.className = 'content-grid list-view';
+            recents.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'stream-card live-item';
+                card.innerHTML = `
+                    <div class="live-icon">
+                        ${item.icon ? `<img src="${item.icon}" onerror="this.parentElement.innerHTML='<span class=\\'material-icons\\'>history</span>'">` : '<span class="material-icons">history</span>'}
+                    </div>
+                    <div class="card-info">
+                        <div class="card-title">${item.name}</div>
+                        <div class="card-meta">Recently Viewed</div>
+                    </div>
+                `;
+                card.addEventListener('click', () => {
+                    if (item.url) this.openPlayer(item.url, item.name, { id: item.id, type: item.type, icon: item.icon, source: item.source });
+                });
+                this.addLongPress(card, item);
+                grid.appendChild(card);
+            });
+        } else {
+            grid.className = 'content-grid';
+            recents.forEach(item => {
+                const img = item.poster || item.icon || '';
+                const card = document.createElement('div');
+                card.className = 'stream-card';
+                card.innerHTML = `
+                    <div class="poster">
+                        ${img ? `<img src="${img}" onerror="this.parentElement.innerHTML='<span class=\\'material-icons placeholder-icon\\'>movie</span>'">` : '<span class="material-icons placeholder-icon">movie</span>'}
+                    </div>
+                    <div class="card-info">
+                        <div class="card-title">${item.name}</div>
+                    </div>
+                `;
+                card.addEventListener('click', () => {
+                    if (item.meta) {
+                        this.openMediaDetail(item.meta);
+                    } else if (item.url) {
+                        this.openPlayer(item.url, item.name, { id: item.id, type: item.type, icon: item.icon, source: item.source });
+                    }
+                });
+                this.addLongPress(card, item);
+                grid.appendChild(card);
+            });
+        }
+    },
+
     // === Stremio Panel ===
     _stremioTab: 'board',
     _stremioSearchQuery: '',
@@ -2018,9 +2445,18 @@ const App = {
 
     initStremio() {
         // Reset to board tab on entry
+        this._stremioFocusZone = 'tabs';
+        this._stremioTabIdx = 0;
+        this._stremioRow = 0;
+        this._stremioCol = 0;
+        this._stremioIdx = 0;
         document.querySelectorAll('.stremio-tab').forEach(t => t.classList.remove('active'));
         document.querySelector('.stremio-tab[data-stab="board"]').classList.add('active');
         this.switchStremioTab('board');
+        // Show focus on first tab so user knows they can navigate
+        this._clearFocus();
+        const firstTab = document.querySelector('.stremio-tab');
+        if (firstTab) firstTab.classList.add('remote-focus');
     },
 
     switchStremioTab(tab) {
@@ -2054,6 +2490,64 @@ const App = {
         }
 
         const rows = [];
+
+        // Add Recently Viewed row for Stremio
+        const stremioRecent = this.recentlyViewed.filter(r => r.section === 'stremio');
+        if (stremioRecent.length > 0) {
+            const recentSection = document.createElement('div');
+            recentSection.className = 'stremio-catalog-row';
+            recentSection.innerHTML = '<h3 class="stremio-row-title"><span class="material-icons" style="font-size:18px;color:#00D4FF;vertical-align:middle;margin-right:4px">history</span>Recently Viewed</h3>';
+            const recentScroller = document.createElement('div');
+            recentScroller.className = 'stremio-row-scroller';
+            stremioRecent.slice(0, 20).forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'stremio-poster-card';
+                card.innerHTML = `
+                    <div class="stremio-poster-img">
+                        ${item.poster ? `<img src="${item.poster}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=\\'material-icons\\' style=\\'font-size:40px;color:#484f58\\'>movie</span>'">` : '<span class="material-icons" style="font-size:40px;color:#484f58">movie</span>'}
+                    </div>
+                    <div class="stremio-poster-title">${item.name}</div>
+                `;
+                card.addEventListener('click', () => {
+                    if (item.meta) {
+                        this.openStremioDetail(item.meta, item.meta._addon || this.stremioAddons[0]);
+                    }
+                });
+                this.addLongPress(card, { ...item, section: 'stremio' });
+                recentScroller.appendChild(card);
+            });
+            recentSection.appendChild(recentScroller);
+            content.appendChild(recentSection);
+        }
+
+        // Add Favorites row for Stremio
+        const stremioFavs = this.favorites.filter(f => f.section === 'stremio');
+        if (stremioFavs.length > 0) {
+            const favSection = document.createElement('div');
+            favSection.className = 'stremio-catalog-row';
+            favSection.innerHTML = '<h3 class="stremio-row-title"><span class="material-icons" style="font-size:18px;color:#00D4FF;vertical-align:middle;margin-right:4px">favorite</span>Favorites</h3>';
+            const favScroller = document.createElement('div');
+            favScroller.className = 'stremio-row-scroller';
+            stremioFavs.forEach(fav => {
+                const card = document.createElement('div');
+                card.className = 'stremio-poster-card';
+                card.innerHTML = `
+                    <div class="stremio-poster-img">
+                        ${fav.poster ? `<img src="${fav.poster}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=\\'material-icons\\' style=\\'font-size:40px;color:#484f58\\'>movie</span>'">` : '<span class="material-icons" style="font-size:40px;color:#484f58">movie</span>'}
+                    </div>
+                    <div class="stremio-poster-title">${fav.name}</div>
+                `;
+                card.addEventListener('click', () => {
+                    if (fav.meta) {
+                        this.openStremioDetail(fav.meta, fav.meta._addon || this.stremioAddons[0]);
+                    }
+                });
+                this.addLongPress(card, { ...fav, section: 'stremio' });
+                favScroller.appendChild(card);
+            });
+            favSection.appendChild(favScroller);
+            content.appendChild(favSection);
+        }
 
         // Load Trending Movies & Trending Shows from Cinemeta first
         const cinemetaAddon = this.stremioAddons.find(a => a.manifest?.id === 'com.linvo.cinemeta');
@@ -2139,92 +2633,112 @@ const App = {
         this.hideLoader();
     },
 
-    // Discover: filterable grid of content from all addons
+    // Discover: browse by type and genre using Cinemeta catalogs
+    _discoverType: 'movie',
+    _discoverGenre: null,
+    _discoverGenres: {
+        movie: ['Action', 'Adventure', 'Animation', 'Biography', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Music', 'Musical', 'Mystery', 'Romance', 'Sci-Fi', 'Sport', 'Thriller', 'War', 'Western'],
+        series: ['Action', 'Adventure', 'Animation', 'Biography', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Music', 'Mystery', 'Romance', 'Sci-Fi', 'Sport', 'Thriller', 'War', 'Western']
+    },
+
     async renderStremioDiscover() {
         const content = document.getElementById('stremioContent');
         content.innerHTML = '';
-        this.showLoader();
 
-        if (this.stremioAddons.length === 0) {
-            content.innerHTML = '<div class="stremio-empty"><p style="color:#8b949e">Install addons to discover content.</p></div>';
-            return;
-        }
-
-        // Build type filter bar + load first addon's catalogs
-        const types = new Set();
-        this.stremioAddons.forEach(addon => {
-            (addon.manifest?.catalogs || []).forEach(c => types.add(c.type));
-        });
-
-        const filterBar = document.createElement('div');
-        filterBar.className = 'stremio-filter-bar';
-        ['all', ...types].forEach(type => {
+        // Type toggle (Movie / Series)
+        const typeBar = document.createElement('div');
+        typeBar.className = 'stremio-filter-bar';
+        typeBar.id = 'stremioTypeBar';
+        ['movie', 'series'].forEach(type => {
             const btn = document.createElement('button');
-            btn.className = 'stremio-filter-btn' + (type === 'all' ? ' active' : '');
-            btn.textContent = type === 'all' ? 'All' : type.charAt(0).toUpperCase() + type.slice(1);
+            btn.className = 'stremio-filter-btn' + (type === this._discoverType ? ' active' : '');
+            btn.textContent = type === 'movie' ? 'Movies' : 'Series';
             btn.addEventListener('click', () => {
-                filterBar.querySelectorAll('.stremio-filter-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                this._loadDiscoverGrid(type === 'all' ? null : type);
+                this._discoverType = type;
+                this._discoverGenre = null;
+                this.renderStremioDiscover();
             });
-            filterBar.appendChild(btn);
+            typeBar.appendChild(btn);
         });
+        content.appendChild(typeBar);
 
-        content.innerHTML = '';
-        content.appendChild(filterBar);
+        // Genre bar
+        const genreBar = document.createElement('div');
+        genreBar.className = 'stremio-filter-bar stremio-genre-bar';
+        genreBar.id = 'stremioGenreBar';
+        const genres = this._discoverGenres[this._discoverType] || [];
 
+        const allBtn = document.createElement('button');
+        allBtn.className = 'stremio-filter-btn' + (!this._discoverGenre ? ' active' : '');
+        allBtn.textContent = 'All';
+        allBtn.addEventListener('click', () => {
+            this._discoverGenre = null;
+            this._loadDiscoverGrid();
+            genreBar.querySelectorAll('.stremio-filter-btn').forEach(b => b.classList.remove('active'));
+            allBtn.classList.add('active');
+        });
+        genreBar.appendChild(allBtn);
+
+        genres.forEach(genre => {
+            const btn = document.createElement('button');
+            btn.className = 'stremio-filter-btn' + (this._discoverGenre === genre ? ' active' : '');
+            btn.textContent = genre;
+            btn.addEventListener('click', () => {
+                this._discoverGenre = genre;
+                this._loadDiscoverGrid();
+                genreBar.querySelectorAll('.stremio-filter-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+            genreBar.appendChild(btn);
+        });
+        content.appendChild(genreBar);
+
+        // Grid
         const grid = document.createElement('div');
         grid.className = 'stremio-discover-grid';
         grid.id = 'stremioDiscoverGrid';
         content.appendChild(grid);
 
-        await this._loadDiscoverGrid(null);
+        await this._loadDiscoverGrid();
     },
 
-    async _loadDiscoverGrid(typeFilter) {
+    async _loadDiscoverGrid() {
         const grid = document.getElementById('stremioDiscoverGrid');
         if (!grid) return;
         grid.innerHTML = '';
         this.showLoader();
 
-        const allMetas = [];
-        const promises = [];
+        const type = this._discoverType;
+        const genre = this._discoverGenre;
+        const cinemetaAddon = this.stremioAddons.find(a => a.manifest?.id === 'com.linvo.cinemeta');
+        const baseUrl = cinemetaAddon ? cinemetaAddon.url : 'https://v3-cinemeta.strem.io';
 
-        this.stremioAddons.forEach(addon => {
-            (addon.manifest?.catalogs || []).forEach(catalog => {
-                if (typeFilter && catalog.type !== typeFilter) return;
-                promises.push(
-                    this.fetchWithTimeout(`${addon.url}/catalog/${catalog.type}/${catalog.id}.json`, 10000)
-                        .then(r => r.json())
-                        .then(data => {
-                            (data.metas || []).forEach(m => allMetas.push({ ...m, _addon: addon }));
-                        })
-                        .catch(() => {})
-                );
-            });
-        });
-
-        await Promise.allSettled(promises);
-
-        // Deduplicate by imdb_id or name
-        const seen = new Set();
-        const unique = allMetas.filter(m => {
-            const key = m.imdb_id || m.id || m.name;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-
-        grid.innerHTML = '';
-        if (unique.length === 0) {
-            grid.innerHTML = '<p style="color:#8b949e;padding:20px">No content found.</p>';
-            return;
+        // Build URL with genre filter
+        let url = `${baseUrl}/catalog/${type}/top.json`;
+        if (genre) {
+            url = `${baseUrl}/catalog/${type}/top/genre=${encodeURIComponent(genre)}.json`;
         }
 
-        unique.slice(0, 100).forEach(meta => {
-            const card = this._createStremioCard(meta, meta._addon);
-            grid.appendChild(card);
-        });
+        try {
+            const resp = await this.fetchWithTimeout(url, 15000);
+            const data = await resp.json();
+            const metas = data.metas || [];
+
+            grid.innerHTML = '';
+            if (metas.length === 0) {
+                grid.innerHTML = '<p style="color:#8b949e;padding:20px">No content found.</p>';
+                this.hideLoader();
+                return;
+            }
+
+            metas.slice(0, 100).forEach(meta => {
+                const card = this._createStremioCard(meta, cinemetaAddon || this.stremioAddons[0]);
+                grid.appendChild(card);
+            });
+        } catch(e) {
+            console.warn('[Discover] Failed:', e.message);
+            grid.innerHTML = '<p style="color:#8b949e;padding:20px">Failed to load content. Try again.</p>';
+        }
         this.hideLoader();
     },
 
@@ -2312,7 +2826,24 @@ const App = {
             </div>
             <div class="stremio-poster-title">${meta.name || 'Unknown'}</div>
         `;
-        card.addEventListener('click', () => this.openStremioDetail(meta, addon));
+        card.addEventListener('click', () => {
+            this.trackRecentlyViewed({
+                id: meta.imdb_id || meta.id || meta.name,
+                name: meta.name || 'Unknown',
+                poster: meta.poster || null,
+                type: meta.type || 'movie',
+                section: 'stremio',
+                meta: { name: meta.name, poster: meta.poster, type: meta.type, imdb_id: meta.imdb_id, id: meta.id, _addon: addon }
+            });
+            this.openStremioDetail(meta, addon);
+        });
+        this.addLongPress(card, {
+            id: meta.imdb_id || meta.id || meta.name,
+            name: meta.name || 'Unknown',
+            poster: meta.poster || null,
+            type: meta.type || 'movie',
+            section: 'stremio'
+        });
         return card;
     },
 
